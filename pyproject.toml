@@ -1,0 +1,20 @@
+[project]
+name = "agents-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "deepagents>=0.4.3",
+    "langchain>=1.2.10",
+    "langchain-community>=0.4.1",
+    "langchain-core>=1.2.15",
+    "langchain-litellm>=0.5.1",
+    "langchain-mcp-adapters>=0.2.1",
+    "langchain-openai>=1.1.10",
+    "path>=17.1.1",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.5.0",
+    "sse-starlette>=1.8.2",
+]
