@@ -44,17 +44,17 @@ Replace `[YOUR_SKILLS_DIR]` with the absolute skills directory path from your sy
 
 Search for machine learning papers:
 ```bash
-.venv/bin/python ~/.deepagents/agent/skills/arxiv-search/arxiv_search.py "deep learning drug discovery" --max-papers 5
+.venv/bin/python ~/.deepagents/agent/skill/arxiv-search/arxiv_search.py "deep learning drug discovery" --max-papers 5
 ```
 
 Search for computational biology papers:
 ```bash
-.venv/bin/python ~/.deepagents/agent/skills/arxiv-search/arxiv_search.py "protein folding prediction"
+.venv/bin/python ~/.deepagents/agent/skill/arxiv-search/arxiv_search.py "protein folding prediction"
 ```
 
 Search for bioinformatics methods:
 ```bash
-.venv/bin/python ~/.deepagents/agent/skills/arxiv-search/arxiv_search.py "genome assembly algorithms"
+.venv/bin/python ~/.deepagents/agent/skill/arxiv-search/arxiv_search.py "genome assembly algorithms"
 ```
 
 ## Output Format

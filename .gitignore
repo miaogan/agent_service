@@ -8,3 +8,18 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
