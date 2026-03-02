@@ -1,63 +1,230 @@
-import asyncio
+# agent_service.py
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, List, Literal, Optional
 
+import httpx
 import uvicorn
-from dotenv import load_dotenv
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-
-
-
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import SkillsMiddleware
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# ======================== 配置 ========================
-ROOT_DIR = Path.cwd()
-os.makedirs(ROOT_DIR / "skill", exist_ok=True)
+# ────────────────────────────────────────────────
+# 配置
+# ────────────────────────────────────────────────
 
 load_dotenv()
 
-llm = ChatOpenAI(
-    openai_api_base="http://127.0.0.1:4000",
-    model="qwen3.5-plus"
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    root_dir: Path = Path.cwd()
+    litellm_api_base: str = "http://127.0.0.1:4000"
+    mcp_default_url: str = "http://127.0.0.1:8000/mcp"
+    agent_cache_size: int = 64
+    default_thread_id: str = "conversation1"
+    default_model: str = "glm-5"
+
+    @property
+    def skill_dir(self) -> Path:
+        return self.root_dir / "skill"
+
+
+settings = Settings()
+
+os.makedirs(settings.skill_dir, exist_ok=True)
+
+# 日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+logger = logging.getLogger("deepagent.service")
 
-backend = FilesystemBackend(
-    root_dir=str(ROOT_DIR),
-    virtual_mode=True,
-)
+# 模式常量
+AGENT_MODE_SKILL = "skill"
+AGENT_MODE_MCP = "mcp"
+AGENT_MODE_BOTH = "both"
+VALID_MODES = {AGENT_MODE_SKILL, AGENT_MODE_MCP, AGENT_MODE_BOTH}
 
-checkpointer = MemorySaver()
+DEFAULT_MCP_CONFIG = {
+    "my_fastmcp": {
+        "transport": "http",
+        "url": "http://127.0.0.1:8000/mcp",
+    }
+}
 
-# ======================== 全局变量 ========================
-agents: Dict[str, any] = {}
-mcp_tools: Optional[List] = None
-skills_middleware: Optional[SkillsMiddleware] = None
+# ────────────────────────────────────────────────
+# 全局缓存 / 预加载
+# ────────────────────────────────────────────────
+
+available_models: List[str] = []
+mcp_tools_cache: List = []
 
 
-# ======================== MCP Tools 加载 ========================
-async def load_mcp_tools():
-    client = MultiServerMCPClient({
-        "my_fastmcp": {
-            "transport": "http",
-            "url": "http://127.0.0.1:8000/mcp",
-        }
-    })
-    return await client.get_tools()
+@lru_cache(maxsize=settings.agent_cache_size)
+def get_checkpointer(thread_id: str) -> MemorySaver:
+    """每个 thread_id 拥有独立的内存检查点"""
+    return MemorySaver()
+
+
+async def preload_litellm_models() -> None:
+    global available_models
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{settings.litellm_api_base}/v1/models", timeout=8.0)
+            if r.status_code == 200:
+                data = r.json()
+                available_models = [
+                    m["id"] for m in data.get("data", []) if m.get("id")
+                ]
+                logger.info(f"Preloaded {len(available_models)} models from LiteLLM")
+            else:
+                logger.warning(f"LiteLLM models fetch failed: {r.status_code}")
+    except Exception as e:
+        logger.error(f"Cannot preload LiteLLM models: {e.__class__.__name__} {e}")
+
+
+async def preload_mcp_tools() -> None:
+    global mcp_tools_cache
+    try:
+        client = MultiServerMCPClient(DEFAULT_MCP_CONFIG)
+        mcp_tools_cache = await client.get_tools()
+        logger.info(f"Preloaded {len(mcp_tools_cache)} MCP tools")
+    except Exception as e:
+        logger.warning(f"MCP tools preload failed: {e.__class__.__name__} {e}")
+
+
+# ────────────────────────────────────────────────
+# Agent 工厂（带缓存）
+# ────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=settings.agent_cache_size)
+def agent_cache_key(mode: str, model: str, mcp_config_fingerprint: str) -> str:
+    return f"{mode}:{model}:{mcp_config_fingerprint}"
+
+
+async def create_agent(
+        mode: str,
+        model_name: str,
+        mcp_config: dict,
+) -> Any:
+    if mode not in VALID_MODES:
+        raise ValueError(f"Invalid mode: {mode}")
+
+    backend = FilesystemBackend(root_dir=str(settings.root_dir), virtual_mode=True)
+
+    llm = ChatOpenAI(
+        openai_api_base=settings.litellm_api_base,
+        model=model_name,
+        temperature=0.7,
+    )
+
+    common_kwargs = {
+        "model": llm,
+        "backend": backend,
+        "checkpointer": None,  # 在 stream 时动态注入
+    }
+
+    if mode == AGENT_MODE_MCP:
+        tools = mcp_tools_cache if mcp_tools_cache else await load_mcp_tools(mcp_config)
+        system = "你是一个强大的助手，可以使用 MCP 工具。所有文件路径必须以 / 开头。"
+        return create_deep_agent(
+            **common_kwargs,
+            system_prompt=system,
+            tools=tools,
+        )
+
+    skills_middleware = SkillsMiddleware(
+        sources=[str(settings.skill_dir)],
+        backend=backend,
+    )
+
+    if mode == AGENT_MODE_SKILL:
+        system = """You are a helpful AI assistant with access to a virtual filesystem.
+All file paths MUST start with / (e.g. /workspace/report.md, /skill/my-skill/SKILL.md).
+Do NOT use Windows-style paths.
+Use ls, read_file, write_file, etc. to interact with files."""
+        return create_deep_agent(
+            **common_kwargs,
+            middleware=[skills_middleware],
+            system_prompt=system,
+        )
+
+    # both
+    tools = mcp_tools_cache if mcp_tools_cache else await load_mcp_tools(mcp_config)
+    system = """You are a helpful AI assistant with access to a virtual filesystem and MCP tools.
+All file paths MUST start with /. Use ls, read_file, write_file, etc."""
+    return create_deep_agent(
+        **common_kwargs,
+        middleware=[skills_middleware],
+        system_prompt=system,
+        tools=tools,
+    )
+
+
+async def load_mcp_tools(config: dict) -> List:
+    try:
+        client = MultiServerMCPClient(config)
+        return await client.get_tools()
+    except Exception as e:
+        logger.error(f"Load MCP tools failed: {e}")
+        return []
+
+
+# ────────────────────────────────────────────────
+# FastAPI 应用
+# ────────────────────────────────────────────────
+
+app = FastAPI(title="DeepAgent Service", version="0.2")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting DeepAgent service...")
+    await preload_litellm_models()
+    await preload_mcp_tools()
+    yield
+    logger.info("Shutting down DeepAgent service...")
+
+
+app.router.lifespan_context = lifespan
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    mode: Literal["skill", "mcp", "both"] = AGENT_MODE_SKILL
+    model: str = settings.default_model
+    thread_id: Optional[str] = settings.default_thread_id
+    mcp_config: dict = Field(default_factory=lambda: DEFAULT_MCP_CONFIG.copy())
 
 
 # ======================== 辅助函数：安全提取文本内容 ========================
 def extract_text_content(msg) -> str:
-    """从 LangChain 消息中安全提取纯文本内容"""
+    """
+    从 LangChain 消息中安全提取纯文本内容
+
+    Args:
+        msg: LangChain 消息对象
+
+    Returns:
+        提取的文本内容
+    """
     if not hasattr(msg, "content") or msg.content is None:
         return ""
 
@@ -70,211 +237,97 @@ def extract_text_content(msg) -> str:
         parts = []
         for block in content:
             if isinstance(block, dict):
-                # 常见的几种 content block 格式
                 if block.get("type") == "text":
                     parts.append(block.get("text", ""))
                 elif "text" in block:
                     parts.append(block["text"])
-                # 忽略 tool_use / tool_result 等结构化块
             else:
                 parts.append(str(block))
         return "".join(parts)
 
-    # 其他意外类型，转字符串兜底
     return str(content)
 
 
-# ======================== FastAPI Lifespan ========================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global mcp_tools, skills_middleware, agents
-    
-    print("🚀 开始初始化服务...")
-    print(f"📁 工作目录: {ROOT_DIR}")
-    print(f"🔧 后端类型: {type(backend).__name__}")
-    print(f"🧠 检查点器类型: {type(checkpointer).__name__}")
-
-    # Skills Middleware
-    print("🔄 初始化 Skills Middleware...")
-    skills_middleware = SkillsMiddleware(
-        sources=["skill"],
-        backend=backend,
-    )
-    print("✅ Skills Middleware 初始化完成")
-
-    # MCP Tools（启动时一次性加载，带容错）
-    try:
-        mcp_tools = await load_mcp_tools()
-        mcp_available = len(mcp_tools) > 0 if mcp_tools else False
-        if not mcp_available:
-            print("⚠️  MCP工具不可用，将跳过MCP相关代理创建")
-    except Exception as e:
-        print(f"❌ MCP工具加载完全失败: {str(e)}")
-        mcp_tools = []
-        mcp_available = False
-
-    # ======================== 创建三种模式的 Agent ========================
-    base_system = """You are a helpful AI assistant with access to a virtual filesystem.
-All file paths MUST start with / (e.g. /workspace/report.md, /skill/my-skill/SKILL.md).
-Do NOT use Windows-style paths.
-Use ls, read_file, write_file, etc. to interact with files."""
-
-    # ---------- skill only ----------
-    print("🔄 开始创建 Skill-only agent...")
-    try:
-        agents["skill"] = create_deep_agent(
-            model=llm,
-            backend=backend,
-            system_prompt=base_system,
-            middleware=[skills_middleware],
-            interrupt_on={
-                "write_file": False,
-                "read_file": False,
-                "edit_file": False,
-            },
-            checkpointer=checkpointer,
-        )
-        print("✅ Skill-only agent 创建成功")
-        print(f"   - 使用模型: {llm.model}")
-        print(f"   - 后端类型: {type(backend).__name__}")
-        print(f"   - 中间件数量: {len([skills_middleware])}")
-        print(f"   - 检查点器类型: {type(checkpointer).__name__}")
-    except Exception as e:
-        print(f"❌ Skill-only agent 创建失败: {str(e)}")
-        raise
-
-    # ---------- mcp only ----------
-    if mcp_available:
-        print("🔄 开始创建 MCP-only agent...")
-        try:
-            agents["mcp"] = create_deep_agent(
-                model=llm,
-                backend=backend,
-                system_prompt="""你是一个强大的助手，可以使用 MCP 工具。
-所有文件路径必须以 / 开头。""",
-                tools=mcp_tools,
-                checkpointer=checkpointer,
-            )
-            print("✅ MCP-only agent 创建成功")
-            print(f"   - 使用模型: {llm.model}")
-            print(f"   - 后端类型: {type(backend).__name__}")
-            print(f"   - MCP工具数量: {len(mcp_tools)}")
-            print(f"   - 检查点器类型: {type(checkpointer).__name__}")
-        except Exception as e:
-            print(f"❌ MCP-only agent 创建失败: {str(e)}")
-            raise
-    else:
-        print("⚠️  跳过MCP-only agent创建（MCP工具不可用）")
-
-    # ---------- both ----------
-    if mcp_available:
-        print("🔄 开始创建 Skills+MCP hybrid agent...")
-        try:
-            agents["both"] = create_deep_agent(
-                model=llm,
-                backend=backend,
-                system_prompt=base_system + "\n你同时拥有 Skills Middleware 和 MCP 工具。",
-                middleware=[skills_middleware],
-                tools=mcp_tools,
-                interrupt_on={
-                    "write_file": False,
-                    "read_file": False,
-                    "edit_file": False,
-                },
-                checkpointer=checkpointer,
-            )
-            print("✅ Skills+MCP hybrid agent 创建成功")
-            print(f"   - 使用模型: {llm.model}")
-            print(f"   - 后端类型: {type(backend).__name__}")
-            print(f"   - 中间件数量: {len([skills_middleware])}")
-            print(f"   - MCP工具数量: {len(mcp_tools)}")
-            print(f"   - 检查点器类型: {type(checkpointer).__name__}")
-        except Exception as e:
-            print(f"❌ Skills+MCP hybrid agent 创建失败: {str(e)}")
-            raise
-    else:
-        print("⚠️  跳过Skills+MCP hybrid agent创建（MCP工具不可用）")
-
-    # 总结
-    print("\n📋 Agent 创建总结:")
-    print(f"   - 成功创建的 Agent 数量: {len(agents)}")
-    for mode in agents.keys():
-        print(f"   - [{mode}] agent: ✅ 已就绪")
-    print("🎉 服务初始化完成！")
-
-    yield
-    # 清理（可选）
-    print("🧹 正在清理资源...")
-    agents.clear()
-    print("✅ 清理完成")
-
-
-app = FastAPI(lifespan=lifespan, title="DeepAgent MCP/Skills Service")
-
-
-# ======================== 请求模型 ========================
-class ChatRequest(BaseModel):
-    message: str
-    mode: str = "skill"  # skill | mcp | both
-    thread_id: Optional[str] = "conversation1"
-
-
-
-# ======================== 流式接口（SSE） ========================
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
-    if req.mode not in agents:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid mode. Use: skill, mcp, both"}
-        )
+async def chat_stream(request: ChatRequest):
+    if request.model not in available_models and available_models:
+        raise HTTPException(400, f"Unknown model: {request.model}")
 
-    agent = agents[req.mode]
-    config = {"configurable": {"thread_id": req.thread_id}}
+    try:
+        agent = await create_agent(
+            request.mode,
+            request.model,
+            request.mcp_config,
+        )
+    except Exception as e:
+        logger.exception("Failed to create agent")
+        raise HTTPException(500, "Failed to initialize agent")
+
+    config = {
+        "configurable": {"thread_id": request.thread_id},
+        "checkpointer": get_checkpointer(request.thread_id),
+    }
 
     async def event_generator() -> AsyncGenerator[str, None]:
         previous_content = ""
         tools_used: List[dict] = []
 
         try:
-            async for chunk in agent.astream(
-                    {"messages": [{"role": "user", "content": req.message}]},
+            async for event in agent.astream(
+                    {"messages": [{"role": "user", "content": request.message}]},
                     config=config,
-                    stream_mode="values",
+                    stream_mode="messages",   # ← 只改了这里
             ):
-                messages = chunk.get("messages", [])
-                if not messages:
+                # event 是 (chunk, metadata) 元组
+                if not isinstance(event, tuple) or len(event) != 2:
                     continue
 
-                last_msg = messages[-1]
+                chunk, metadata = event
 
-                # 工具调用检测
-                if hasattr(last_msg, "tool_calls") and getattr(last_msg, "tool_calls", None):
-                    for tc in last_msg.tool_calls:
-                        tool_info = {
-                            "type": "tool_call",
-                            "tool": tc.get("name"),
-                            "args": tc.get("args", {}),
-                            "tool_call_id": tc.get("id")
-                        }
-                        # 避免重复推送相同的 tool call
-                        if tool_info not in tools_used:
-                            tools_used.append(tool_info)
-                            yield f"data: {json.dumps(tool_info, ensure_ascii=False)}\n\n"
+                # 工具调用检测（尽量兼容原有风格）
+                tool_calls = getattr(chunk, "tool_calls", None) or getattr(chunk, "tool_call_chunks", None)
+                if tool_calls:
+                    for tc in tool_calls:
+                        # tool_call_chunks 可能是 list of dict，tool_calls 可能是 list of ToolCall
+                        name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                        args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+                        id_  = tc.get("id")   if isinstance(tc, dict) else getattr(tc, "id", None)
 
-                # 内容增量
-                curr = extract_text_content(last_msg)
+                        if name:
+                            tool_info = {
+                                "type": "tool_call",
+                                "tool": name,
+                                "args": args,
+                                "tool_call_id": id_
+                            }
+                            if tool_info not in tools_used:
+                                tools_used.append(tool_info)
+                                yield f"data: {json.dumps(tool_info, ensure_ascii=False)}\n\n"
 
-                if curr:
-                    if curr.startswith(previous_content):
-                        delta = curr[len(previous_content):]
-                        if delta.strip():  # 避免推送纯空白
-                            yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
-                        previous_content = curr
-                    else:
-                        # 内容被重置的情况（较少见）
-                        yield f"data: {json.dumps({'type': 'delta', 'content': curr}, ensure_ascii=False)}\n\n"
-                        previous_content = curr
+                # 内容增量处理（核心改动在这里）
+                delta = ""
+                if hasattr(chunk, "content"):
+                    content = chunk.content
+
+                    if isinstance(content, str):
+                        delta = content
+                    elif isinstance(content, list):
+                        # 处理 content = [{"type": "text", "text": "..."}, ...]
+                        delta = "".join(
+                            part.get("text", "") if isinstance(part, dict) else str(part)
+                            for part in content
+                        )
+
+                if delta:
+                    # 累加完整内容，用于 done 事件
+                    previous_content += delta
+
+                    # 发送本次增量
+                    if delta.strip():
+                        yield f"data: {json.dumps(
+                            {'type': 'delta', 'content': delta},
+                            ensure_ascii=False
+                        )}\n\n"
 
             # 结束事件
             yield f"data: {json.dumps({
@@ -285,7 +338,8 @@ async def chat_stream(req: ChatRequest):
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            logger.error(f"流式处理出错：{type(e).__name__} - {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': '处理过程中发生错误'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -294,25 +348,11 @@ async def chat_stream(req: ChatRequest):
     )
 
 
-# ======================== 健康检查 ========================
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "available_modes": list(agents.keys()),
-        "mcp_tools_loaded": mcp_tools is not None,
-        "mcp_tools_count": len(mcp_tools) if mcp_tools else 0,
-        "mcp_available": len(mcp_tools) > 0 if mcp_tools else False
-    }
-
-
-if __name__ == '__main__':
-
-    # 运行开发服务器
+if __name__ == "__main__":
     uvicorn.run(
-        "app.agent_service:app",
+        "agent_service:app",
         host="0.0.0.0",
         port=8001,
-        reload=True,  # 开发模式下启用热重载
-        log_level="info"
+        reload=True,
+        log_level="info",
     )
