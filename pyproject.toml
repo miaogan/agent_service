@@ -18,4 +18,5 @@ dependencies = [
     "pydantic>=2.5.0",
     "sse-starlette>=1.8.2",
     "fastmcp>=3.0.2",
+    "langchain-experimental>=0.4.1",
 ]

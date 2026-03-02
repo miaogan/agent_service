@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator, List, Literal, Optional
-
 import httpx
 import uvicorn
 from deepagents import create_deep_agent
@@ -15,6 +14,7 @@ from deepagents.middleware import SkillsMiddleware
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_experimental.tools import PythonREPLTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -67,7 +67,10 @@ DEFAULT_MCP_CONFIG = {
         "url": "http://127.0.0.1:8000/mcp",
     }
 }
-
+safe_python_tool = PythonREPLTool(
+    name="safe_python",
+    description="更安全的 Python 代码执行工具。适合执行数学、数据处理代码。"
+)
 # ────────────────────────────────────────────────
 # 全局缓存 / 预加载
 # ────────────────────────────────────────────────
@@ -147,7 +150,7 @@ async def create_agent(
         return create_deep_agent(
             **common_kwargs,
             system_prompt=system,
-            tools=tools,
+            tools=tools+[safe_python_tool],
         )
 
     skills_middleware = SkillsMiddleware(
@@ -174,7 +177,7 @@ All file paths MUST start with /. Use ls, read_file, write_file, etc."""
         **common_kwargs,
         middleware=[skills_middleware],
         system_prompt=system,
-        tools=tools,
+        tools=tools+[safe_python_tool],
     )
 
 
