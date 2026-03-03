@@ -72,11 +72,117 @@ safe_python_tool = PythonREPLTool(
     description="更安全的 Python 代码执行工具。适合执行数学、数据处理代码。"
 )
 # ────────────────────────────────────────────────
-# 全局缓存 / 预加载
+# Agent 池化管理
 # ────────────────────────────────────────────────
 
-available_models: List[str] = []
-mcp_tools_cache: List = []
+from typing import Dict, List
+import asyncio
+from collections import deque
+import time
+
+# Agent 池配置
+AGENT_POOL_SIZE = 3  # 每个 Agent 配置预创建的实例数
+AGENT_POOL_TIMEOUT = 300  # 实例在池中最大空闲时间 (秒)
+
+
+class AgentPool:
+    """Agent 实例池，支持按配置隔离和自动回收"""
+    
+    def __init__(self):
+        # pool_storage[key] = deque of (agent_instance, last_used_time)
+        self.pool_storage: Dict[str, deque] = {}
+        self._lock = asyncio.Lock()
+    
+    def _generate_pool_key(self, mode: str, model_name: str, mcp_config: dict) -> str:
+        """生成池的键值，用于隔离不同配置的 Agent"""
+        # 使用 mcp_config 的 JSON 指纹作为 key 的一部分
+        config_fingerprint = json.dumps(mcp_config, sort_keys=True)
+        return f"{mode}:{model_name}:{config_fingerprint}"
+    
+    async def acquire(
+        self,
+        mode: str,
+        model_name: str,
+        mcp_config: dict,
+    ) -> Any:
+        """从池中获取一个 Agent 实例，如果没有则创建新的"""
+        pool_key = self._generate_pool_key(mode, model_name, mcp_config)
+        
+        async with self._lock:
+            if pool_key not in self.pool_storage:
+                # 初始化该配置的 Agent 池
+                self.pool_storage[pool_key] = deque()
+                logger.info(f"Initializing agent pool for {pool_key} with {AGENT_POOL_SIZE} instances")
+                
+                # 预创建 AGENT_POOL_SIZE 个实例
+                for i in range(AGENT_POOL_SIZE):
+                    try:
+                        agent = await create_agent(mode, model_name, mcp_config)
+                        self.pool_storage[pool_key].append((agent, time.time()))
+                        logger.info(f"Created agent instance {i+1}/{AGENT_POOL_SIZE} for {pool_key}")
+                    except Exception as e:
+                        logger.error(f"Failed to create agent instance: {e}")
+                        raise
+            
+            # 从池中取出最久未使用的实例
+            if self.pool_storage[pool_key]:
+                agent, last_used = self.pool_storage[pool_key].popleft()
+                
+                # 检查实例是否超时
+                if time.time() - last_used > AGENT_POOL_TIMEOUT:
+                    logger.warning(f"Agent instance expired, creating new one for {pool_key}")
+                    try:
+                        agent = await create_agent(mode, model_name, mcp_config)
+                    except Exception as e:
+                        logger.error(f"Failed to create replacement agent: {e}")
+                        raise
+                
+                logger.debug(f"Acquired agent instance from pool {pool_key}")
+                return agent
+            else:
+                # 池为空，创建新实例
+                logger.info(f"Pool {pool_key} empty, creating new agent instance")
+                return await create_agent(mode, model_name, mcp_config)
+    
+    async def release(
+        self,
+        mode: str,
+        model_name: str,
+        mcp_config: dict,
+        agent: Any,
+    ) -> None:
+        """将 Agent 实例归还到池中"""
+        pool_key = self._generate_pool_key(mode, model_name, mcp_config)
+        
+        async with self._lock:
+            if pool_key in self.pool_storage:
+                self.pool_storage[pool_key].append((agent, time.time()))
+                logger.debug(f"Released agent instance back to pool {pool_key}")
+    
+    async def cleanup(self) -> None:
+        """清理所有池中的超时实例"""
+        async with self._lock:
+            current_time = time.time()
+            for pool_key, pool in list(self.pool_storage.items()):
+                # 移除超时的实例
+                expired_count = 0
+                valid_instances = []
+                for agent, last_used in pool:
+                    if current_time - last_used > AGENT_POOL_TIMEOUT:
+                        expired_count += 1
+                        # 这里可以添加清理逻辑，比如关闭 agent 的资源
+                    else:
+                        valid_instances.append((agent, last_used))
+                
+                if expired_count > 0:
+                    logger.info(f"Cleaned up {expired_count} expired instances from pool {pool_key}")
+                
+                pool.clear()
+                pool.extend(valid_instances)
+
+
+# 全局 Agent 池实例
+agent_pool = AgentPool()
 
 
 @lru_cache(maxsize=settings.agent_cache_size)
@@ -202,8 +308,29 @@ async def lifespan(app: FastAPI):
     logger.info("Starting DeepAgent service...")
     await preload_litellm_models()
     await preload_mcp_tools()
+    
+    # 预初始化 Agent 池 - 为默认配置创建实例
+    if available_models:
+        default_model = available_models[0] if available_models else settings.default_model
+        logger.info(f"Pre-initializing agent pool with default model: {default_model}")
+        try:
+            # 为每种模式预创建 AGENT_POOL_SIZE 个实例
+            for mode in VALID_MODES:
+                try:
+                    # 预热 Agent 池（会创建 AGENT_POOL_SIZE 个实例）
+                    await agent_pool.acquire(mode, default_model, DEFAULT_MCP_CONFIG)
+                    logger.info(f"Pre-initialized {AGENT_POOL_SIZE} agents for mode: {mode}")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-initialize agent for mode {mode}: {e}")
+        except Exception as e:
+            logger.warning(f"Agent pool pre-initialization failed: {e}")
+    
     yield
+    
     logger.info("Shutting down DeepAgent service...")
+    # 清理 Agent 池
+    await agent_pool.cleanup()
+    logger.info("Agent pool cleaned up")
 
 
 app.router.lifespan_context = lifespan
@@ -256,14 +383,16 @@ async def chat_stream(request: ChatRequest):
     if request.model not in available_models and available_models:
         raise HTTPException(400, f"Unknown model: {request.model}")
 
+    agent = None
     try:
-        agent = await create_agent(
+        # 从 Agent 池获取实例
+        agent = await agent_pool.acquire(
             request.mode,
             request.model,
             request.mcp_config,
         )
     except Exception as e:
-        logger.exception("Failed to create agent")
+        logger.exception("Failed to acquire agent from pool")
         raise HTTPException(500, "Failed to initialize agent")
 
     config = {
@@ -344,6 +473,19 @@ async def chat_stream(request: ChatRequest):
             logger.error(f"流式处理出错：{type(e).__name__} - {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': '处理过程中发生错误'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
+        finally:
+            # 将 Agent 实例归还到池中
+            if agent is not None:
+                try:
+                    await agent_pool.release(
+                        request.mode,
+                        request.model,
+                        request.mcp_config,
+                        agent,
+                    )
+                    logger.debug("Agent instance returned to pool")
+                except Exception as e:
+                    logger.error(f"Failed to release agent back to pool: {e}")
 
     return StreamingResponse(
         event_generator(),
