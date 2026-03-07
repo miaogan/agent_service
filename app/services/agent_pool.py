@@ -171,6 +171,11 @@ class AgentPool:
 
     def _is_expired(self, pooled: PooledAgent) -> bool:
         """Check if an agent has expired based on TTL or turn limit."""
+        # Check if agent is persistent (never destroy)
+        if pooled.config.persistent:
+            logger.debug(f"Agent {pooled.config.agent_id} is persistent, skipping expiration check")
+            return False
+        
         # Check turn limit
         max_turns = pooled.config.max_turns or self.default_max_turns
         if pooled.runtime.current_turns >= max_turns:

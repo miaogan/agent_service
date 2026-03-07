@@ -44,6 +44,10 @@ class AgentConfig(BaseModel):
     )
     max_turns: int = Field(default=50, description="Maximum conversation turns")
     ttl_minutes: int = Field(default=30, description="TTL in minutes after last use")
+    persistent: bool = Field(
+        default=False, 
+        description="If True, agent will never be destroyed due to TTL or turn limits"
+    )
     created_at: datetime = Field(
         default_factory=datetime.now, description="Creation timestamp"
     )
@@ -77,6 +81,12 @@ class AgentConfigCreate(BaseModel):
     )
     max_turns: int = Field(default=50, ge=1, le=100, description="Maximum conversation turns")
     ttl_minutes: int = Field(default=30, ge=1, le=1440, description="TTL in minutes")
+    persistent: bool = Field(
+        default=False,
+        ge=False,
+        le=True,
+        description="If True, agent will never be destroyed"
+    )
 
 
 class AgentConfigUpdate(BaseModel):
@@ -94,6 +104,7 @@ class AgentConfigUpdate(BaseModel):
     )
     max_turns: Optional[int] = Field(default=None, ge=1, le=100)
     ttl_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    persistent: Optional[bool] = Field(default=None, description="Persistent flag")
 
 
 class AgentRuntimeInfo(BaseModel):
@@ -130,6 +141,10 @@ class ResumeRequest(BaseModel):
 
     decision: str = Field(..., description="Decision: 'approve', 'reject', or 'edit'")
     tool_call_id: str = Field(..., description="Tool call ID to resume")
+    tool_name: Optional[str] = Field(
+        default=None,
+        description="Tool name (required for 'edit' decision)"
+    )
     edited_args: Optional[Dict[str, Any]] = Field(
         default=None, 
         description="Edited arguments (only for 'edit' decision)"

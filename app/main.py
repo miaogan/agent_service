@@ -71,6 +71,7 @@ def create_default_agent_config(settings: Settings) -> AgentConfig:
         },
         max_turns=100,  # Higher limit for default agent
         ttl_minutes=60,  # Longer TTL for default agent
+        persistent=True,  # Never destroy default agent
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
@@ -136,6 +137,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         for config in configs:
             agent_pool.register_config(config)
         logger.info(f"Loaded {len(configs)} agent configurations into pool")
+
+        # Pre-create default agent instance (eager initialization)
+        try:
+            await agent_pool.get(DEFAULT_AGENT_ID)
+            logger.info(f"Default agent instance created and ready in pool")
+        except Exception as e:
+            logger.error(f"Failed to create default agent instance: {e}")
 
         yield
 

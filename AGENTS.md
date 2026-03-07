@@ -1,6 +1,7 @@
 # DeepAgent Service - Project Knowledge Base
 
 **Generated:** 2026-03-07
+**Updated:** 2026-03-07 (Bug Fixes)
 **Language:** Python 3.12+
 **Framework:** FastAPI + LangChain + DeepAgents + LangGraph
 **Size:** Medium (~2000 lines)
@@ -65,6 +66,7 @@ agent_service/
 | **配置模型** | `app/models/schemas.py` | AgentConfig, ChatRequest |
 | **设置** | `app/core/config.py` | Settings 类 |
 | **会话持久化** | `app/core/checkpoint.py` | PostgreSQL checkpointer |
+| **工具注册** | `app/core/tools.py` | 工具注册表、动态加载 |
 | **存储** | `app/core/storage.py` | JSON 持久化 |
 
 ---
@@ -218,10 +220,13 @@ curl -X POST http://localhost:8001/chat/safe-agent/resume \
 -d '{
   "decision": "edit",
   "tool_call_id": "call_abc123",
+  "tool_name": "python_sandbox",
   "edited_args": {"code": "result = 3+3; print(result)"},
   "thread_id": "conversation1"
 }'
 ```
+
+**注意：** `edit` 决策必须提供 `tool_name` 和 `edited_args` 字段。
 
 #### 5. 接收执行结果
 ```javascript
@@ -372,16 +377,105 @@ A: 可以。更新 Agent 配置后，下次创建 Agent 实例时会使用新配
 
 ---
 
-## AGENT POOL
+## TOOL REGISTRY
 
-### 默认 Agent
-服务启动自动创建 `default` Agent：
-- **Model**: `glm-5`（可配置）
-- **Tools**: `python_sandbox`
-- **MCP**: 配置的 MCP 服务器
-- **Interrupt**: `{"execute": true}`
-- **Max Turns**: 100
-- **TTL**: 60 分钟
+### 概述
+工具注册表提供动态工具加载机制，支持根据 Agent 配置灵活加载所需工具。
+
+### 核心功能
+- **工具注册表** (`TOOL_REGISTRY`) - 工具名称到工厂函数的映射
+- **动态加载** (`get_tools_by_names()`) - 根据工具名称列表加载工具实例
+- **Settings 绑定** - 工具工厂自动绑定应用配置
+
+### 使用方式
+
+#### 注册新工具
+```python
+# app/core/tools.py
+from langchain_core.tools import tool
+
+@tool
+async def my_custom_tool(arg: str) -> str:
+    """工具描述"""
+    return f"Result: {arg}"
+
+# 在 TOOL_REGISTRY 中注册
+TOOL_REGISTRY = {
+    "python_sandbox": get_sandbox_tool,
+    "my_custom_tool": lambda settings: my_custom_tool,  # 不需要 settings 的工具
+}
+```
+
+#### 配置 Agent 使用工具
+```python
+# 创建 Agent 配置时指定工具
+AgentConfig(
+    agent_id="my-agent",
+    name="My Agent",
+    model="glm-5",
+    tools=["python_sandbox", "my_custom_tool"],  # 从注册表加载
+)
+```
+
+### 默认工具
+- **python_sandbox** - 安全执行 Python 代码（OpenSandbox 容器隔离）
+
+---
+
+## STREAMING EVENTS
+
+### 事件格式
+
+DeepAgent 使用 LangGraph 的双模式流式传输：`stream_mode=["messages", "updates"]`
+
+#### 事件结构
+```python
+# 所有事件都是 2-tuple 格式
+(mode: str, value: Any)
+
+# mode = "messages"
+value = (AIMessageChunk, metadata_dict)
+
+# mode = "updates"  
+value = dict  # 状态更新或中断事件
+```
+
+#### Messages 模式
+流式传输 AI 响应内容增量：
+```python
+# 事件示例
+("messages", (AIMessageChunk(content="你好"), {"langgraph_node": "model", ...}))
+
+# 处理方式
+if mode == "messages":
+    msg, metadata = value
+    if msg.content:
+        yield {"type": "delta", "content": msg.content}
+```
+
+#### Updates 模式
+传输状态更新和中断事件：
+```python
+# 状态更新
+("updates", {"model": {"messages": [AIMessage(...)]}})
+
+# 中断事件
+("updates", {"__interrupt__": [Interrupt(...)]})
+```
+
+### SSE 客户端事件
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `delta` | 内容增量 | `{"type": "delta", "content": "你"}` |
+| `tool_call` | 工具调用 | `{"type": "tool_call", "tool": "python_sandbox", "args": {...}}` |
+| `interrupt` | 等待人工确认 | `{"type": "interrupt", "interrupts": [...]}` |
+| `done` | 完成 | `{"type": "done", "content": "...", "tools_used": [...]}` |
+| `error` | 错误 | `{"type": "error", "message": "..."}` |
+
+---
+
+## AGENT POOL
 
 ### 生命周期
 - **Lazy initialization** - 首次请求时创建
@@ -389,17 +483,14 @@ A: 可以。更新 Agent 配置后，下次创建 Agent 实例时会使用新配
 - **Turn limits** - 最大轮次限制
 - **Background cleanup** - 每 60 秒清理过期 Agent
 
----
-
-## SSE EVENTS
-
-| Type | Description |
-|------|-------------|
-| `delta` | 内容增量 |
-| `tool_call` | 工具调用 |
-| `interrupt` | 等待人工确认 |
-| `done` | 完成 |
-| `error` | 错误 |
+### 默认 Agent
+服务启动自动创建 `default` Agent：
+- **Model**: `glm-5`（可配置）
+- **Tools**: `["python_sandbox"]`（从工具注册表加载）
+- **MCP**: 配置的 MCP 服务器
+- **Interrupt**: `{"execute": true}`
+- **Max Turns**: 100
+- **TTL**: 60 分钟
 
 ---
 
@@ -479,3 +570,75 @@ uv run ruff check app/
 - **禁止** Windows 路径（D:, C:）
 - Agent ID 必须唯一
 - 配置持久化到 `data/agent_configs.json`
+
+---
+
+## RECENT UPDATES
+
+### 2026-03-07 - Bug Fixes
+
+#### 🐛 修复的关键问题
+
+**1. 流式事件格式不匹配** ⭐ **核心修复**
+- **问题**: 代码期望 3-tuple `(metadata, mode, chunk)`，但实际返回 2-tuple `(mode, value)`
+- **影响**: 所有流式内容被过滤掉，导致对话接口返回空内容
+- **修复**: 更正事件解析逻辑为 2-tuple 格式
+- **文件**: `app/api/routes.py` (chat_stream, resume_stream)
+
+**2. 工具配置被忽略**
+- **问题**: AgentConfig 的 `tools` 字段被硬编码忽略，始终使用 `[python_sandbox]`
+- **修复**: 
+  - 添加工具注册表机制 (`TOOL_REGISTRY`)
+  - 支持动态加载工具 (`get_tools_by_names()`)
+  - Agent 创建时使用配置中的工具列表
+- **文件**: `app/core/tools.py`, `app/services/agent_service.py`
+
+**3. Resume Edit 决策缺少工具名称**
+- **问题**: edit 决策时工具名称硬编码为 "unknown"，导致恢复失败
+- **修复**: 在 `ResumeRequest` 中添加 `tool_name` 可选字段，edit 时必填
+- **文件**: `app/models/schemas.py`, `app/api/routes.py`
+
+**4. Chat Stream 错误处理不当**
+- **问题**: agent 不存在时直接返回 404，无 fallback 机制
+- **修复**: 区分配置不存在和创建失败，为默认 agent 提供自动创建 fallback
+- **文件**: `app/api/routes.py`
+
+#### ✅ 验证结果
+
+所有修复已通过测试验证：
+- ✅ 流式内容正确返回（之前返回空，现在有内容）
+- ✅ 工具配置生效（AgentConfig.tools 字段被正确使用）
+- ✅ Resume edit 决策正常工作（tool_name 字段必填）
+- ✅ 错误信息更清晰（区分配置不存在和创建失败）
+
+#### 📊 技术细节
+
+**事件流格式修正：**
+```python
+# 错误的格式（3-tuple）
+metadata, mode, chunk = event
+
+# 正确的格式（2-tuple）
+mode, value = event
+if mode == "messages":
+    msg, metadata = value  # value 也是 2-tuple
+```
+
+**工具加载流程：**
+```python
+# 1. 从配置获取工具名称列表
+config = AgentConfig(tools=["python_sandbox", "custom_tool"])
+
+# 2. 从注册表动态加载
+tools = get_tools_by_names(config.tools, settings)
+
+# 3. 创建 Agent 时使用
+agent = create_deep_agent(tools=tools, ...)
+```
+
+#### 🔧 向后兼容性
+
+所有修改保持向后兼容：
+- 未指定 tools 时使用默认的 `python_sandbox`
+- 未指定 tool_name 时 approve/reject 决策正常工作
+- 旧的事件处理代码仍能处理非流式响应

@@ -88,6 +88,7 @@ class AgentService:
         enable_skills: bool = True,
         enable_mcp: bool = True,
         interrupt_on: Optional[Dict[str, bool]] = None,
+        tool_names: Optional[List[str]] = None,
     ) -> Any:
         """
         Create a DeepAgent instance.
@@ -99,6 +100,7 @@ class AgentService:
             enable_skills: Whether to enable skills middleware
             enable_mcp: Whether to load MCP tools
             interrupt_on: Tools that require human approval (e.g., {"execute": True})
+            tool_names: List of tool names to load from registry (optional)
         """
         backend = FilesystemBackend(
             root_dir=str(self.settings.root_dir),
@@ -135,7 +137,19 @@ class AgentService:
         )
 
         # Build tools list
-        tools = [python_sandbox]
+        from app.core.tools import get_tools_by_names
+        
+        tools = []
+        
+        # Load tools from registry if specified
+        if tool_names:
+            tools.extend(get_tools_by_names(tool_names, self.settings))
+            logger.info(f"Loaded {len(tools)} tools from registry: {tool_names}")
+        else:
+            # Default tools if none specified
+            logger.info("No tools specified, using default: python_sandbox")
+            from app.core.tools import python_sandbox
+            tools.append(python_sandbox)
 
         # Load MCP tools if enabled
         if enable_mcp:
@@ -220,6 +234,7 @@ class AgentService:
             enable_skills=True,  # Always enable skills
             enable_mcp=enable_mcp,
             interrupt_on=config.interrupt_on,
+            tool_names=config.tools if config.tools else None,
         )
 
     def validate_model(self, model_name: str) -> bool:

@@ -55,9 +55,20 @@ async def chat_stream(
                 raise HTTPException(410, f"Agent {agent_id} has reached max turns")
             logger.info(f"Using pooled agent: {agent_id}")
         else:
-            raise HTTPException(404, f"Agent not found: {agent_id}")
+            # Check if config exists to provide better error message
+            if agent_id not in agent_pool._configs:
+                logger.warning(f"Agent config not found: {agent_id}")
+                # If using default agent and it doesn't exist, try to create directly
+                if agent_id == DEFAULT_AGENT_ID:
+                    logger.info("Default agent not found in pool, will create directly")
+                else:
+                    raise HTTPException(404, f"Agent configuration not found: {agent_id}")
+            else:
+                # Config exists but agent creation failed
+                logger.error(f"Failed to create agent instance: {agent_id}")
+                raise HTTPException(500, f"Failed to initialize agent: {agent_id}")
 
-    # Fallback: create agent directly
+    # Fallback: create agent directly (for default agent or when pool is not available)
     if agent is None:
         if not agent_service.validate_model(request.model):
             raise HTTPException(400, f"Unknown model: {request.model}")
@@ -80,16 +91,17 @@ async def chat_stream(
                 config=config,
                 stream_mode=["messages", "updates"],  # Both modes required for HITL
             ):
-                # Event format: (metadata, mode, chunk) with 3 elements
-                if not isinstance(event, tuple) or len(event) != 3:
+                # Event format: (mode, value) with 2 elements
+                if not isinstance(event, tuple) or len(event) != 2:
+                    logger.warning(f"Unexpected event format: {type(event)}, len={len(event) if isinstance(event, tuple) else 'not tuple'}")
                     continue
                 
-                metadata, mode, chunk = event
+                mode, value = event
                 
                 # Handle updates mode - check for interrupts
                 if mode == "updates":
-                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
-                        interrupt_data = chunk["__interrupt__"]
+                    if isinstance(value, dict) and "__interrupt__" in value:
+                        interrupt_data = value["__interrupt__"]
                         if interrupt_data and len(interrupt_data) > 0:
                             # Extract interrupt info from Interrupt object
                             interrupt_obj = interrupt_data[0]
@@ -128,10 +140,11 @@ async def chat_stream(
                 
                 # Handle messages mode - stream content
                 elif mode == "messages":
-                    if not isinstance(chunk, tuple) or len(chunk) != 2:
+                    # value is (message_chunk, metadata_dict)
+                    if not isinstance(value, tuple) or len(value) != 2:
                         continue
                     
-                    msg, msg_metadata = chunk
+                    msg, msg_metadata = value
 
                     # Tool calls
                     tcalls = (
@@ -235,12 +248,12 @@ async def resume_stream(
     elif request.decision == "edit":
         if not request.edited_args:
             raise HTTPException(400, "edited_args required for edit decision")
-        # Get the tool name from state or use default
-        # Note: In real implementation, you'd fetch the tool name from the interrupted state
+        if not request.tool_name:
+            raise HTTPException(400, "tool_name required for edit decision")
         decision = {
             "type": "edit",
             "edited_action": {
-                "name": "unknown",  # Will be replaced by actual tool name
+                "name": request.tool_name,
                 "args": request.edited_args
             }
         }
@@ -261,16 +274,16 @@ async def resume_stream(
                 config=config,
                 stream_mode=["messages", "updates"],  # Both modes required
             ):
-                # Event format: (metadata, mode, chunk)
-                if not isinstance(event, tuple) or len(event) != 3:
+                # Event format: (mode, value)
+                if not isinstance(event, tuple) or len(event) != 2:
                     continue
                 
-                metadata, mode, chunk = event
+                mode, value = event
                 
                 # Handle updates mode - check for interrupts
                 if mode == "updates":
-                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
-                        interrupt_data = chunk["__interrupt__"]
+                    if isinstance(value, dict) and "__interrupt__" in value:
+                        interrupt_data = value["__interrupt__"]
                         if interrupt_data and len(interrupt_data) > 0:
                             interrupt_obj = interrupt_data[0]
                             interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
@@ -303,10 +316,10 @@ async def resume_stream(
                 
                 # Handle messages mode - stream content
                 elif mode == "messages":
-                    if not isinstance(chunk, tuple) or len(chunk) != 2:
+                    if not isinstance(value, tuple) or len(value) != 2:
                         continue
                     
-                    msg, msg_metadata = chunk
+                    msg, msg_metadata = value
 
                     # Tool calls
                     tcalls = getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None)
@@ -367,6 +380,7 @@ def create_agent_config(
         interrupt_on=config_create.interrupt_on,
         max_turns=config_create.max_turns,
         ttl_minutes=config_create.ttl_minutes,
+        persistent=config_create.persistent,
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )

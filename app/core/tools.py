@@ -116,14 +116,64 @@ async def python_sandbox(
 
 
 def get_sandbox_tool(settings: Settings):
-    """Get the sandbox tool with settings bound."""
-    async def sandbox_wrapper(code: str, timeout_seconds: Optional[int] = 180) -> str:
+    """Get the sandbox tool with settings bound.
+    
+    Returns a wrapper that has settings pre-bound.
+    """
+    # Store settings in closure
+    bound_settings = settings
+    
+    @tool
+    async def python_sandbox_with_settings(code: str, timeout_seconds: Optional[int] = 180) -> str:
+        """
+        Safely execute Python code in an isolated container (via OpenSandbox).
+
+        Important:
+        - If persistent files are needed (charts, CSV, reports, model files, etc.),
+          save them to /workspace directory
+        - These files will automatically appear in the host's sandbox_output_host_dir
+        - Supports numpy / pandas / matplotlib / sympy libraries
+        - Each execution is a fresh environment (except mounted persistent directory)
+        """
+        # Call the original tool with bound settings
         return await python_sandbox.ainvoke({
             "code": code,
-            "settings": settings,
+            "settings": bound_settings,
             "timeout_seconds": timeout_seconds,
         })
+    
+    # Override the name to match the expected tool name
+    python_sandbox_with_settings.name = "python_sandbox"
+    
+    return python_sandbox_with_settings
 
-    sandbox_wrapper.name = "python_sandbox"
-    sandbox_wrapper.description = python_sandbox.description
-    return sandbox_wrapper
+
+# ─── Tool Registry ───────────────────────────────────────────────────────
+
+# Registry mapping tool names to their factory functions
+# Each factory takes Settings and returns a tool instance
+TOOL_REGISTRY = {
+    "python_sandbox": get_sandbox_tool,
+}
+
+
+def get_tools_by_names(tool_names: list[str], settings: Settings) -> list:
+    """
+    Get tool instances by their names from the registry.
+    
+    Args:
+        tool_names: List of tool names to load
+        settings: Application settings
+        
+    Returns:
+        List of tool instances
+    """
+    tools = []
+    for name in tool_names:
+        if name in TOOL_REGISTRY:
+            tool_factory = TOOL_REGISTRY[name]
+            tools.append(tool_factory(settings))
+            logger.info(f"Loaded tool: {name}")
+        else:
+            logger.warning(f"Tool not found in registry: {name}")
+    return tools
