@@ -5,7 +5,7 @@ Provides agent creation, MCP tool loading, and model management.
 """
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from deepagents import create_deep_agent
@@ -15,6 +15,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
 from app.core.config import Settings, PERSISTENT_MOUNT_PATH, DEFAULT_MCP_CONFIG
+from app.core.checkpoint import get_checkpoint_manager
 from app.core.tools import python_sandbox
 from app.models.schemas import AgentConfig
 
@@ -181,6 +182,15 @@ class AgentService:
             interrupt_config = interrupt_on
             logger.info(f"Human-in-the-loop enabled for tools: {list(interrupt_on.keys())}")
 
+        # Get PostgreSQL checkpointer if available
+        checkpointer = None
+        checkpoint_manager = get_checkpoint_manager()
+        if checkpoint_manager.saver:
+            checkpointer = checkpoint_manager.saver
+            logger.info("Using PostgreSQL checkpointer for conversation persistence")
+        else:
+            logger.info("Using in-memory checkpointer")
+
         return create_deep_agent(
             model=llm,
             backend=composite_backend,
@@ -188,7 +198,7 @@ class AgentService:
             system_prompt=system,
             tools=tools,
             interrupt_on=interrupt_config,
-            checkpointer=True,  # Enable checkpointer for interrupt/resume
+            checkpointer=checkpointer if checkpointer else True,
         )
 
     async def create_agent_from_config(self, config: AgentConfig) -> Any:

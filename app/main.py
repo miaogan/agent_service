@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import register_routes
 from app.core.config import Settings, get_settings, ensure_directories
+from app.core.checkpoint import get_checkpoint_manager
 from app.core.storage import AgentConfigStorage
 from app.models.schemas import AgentConfig
 from app.services.agent_pool import AgentPool
@@ -98,6 +99,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         """Application lifespan manager."""
         logger.info("DeepAgent service starting...")
 
+        # Initialize PostgreSQL checkpointer
+        checkpoint_manager = get_checkpoint_manager()
+        try:
+            await checkpoint_manager.setup()
+            logger.info("PostgreSQL checkpointer initialized")
+        except Exception as e:
+            logger.warning(f"PostgreSQL checkpointer not available, using in-memory: {e}")
+
         # Load available models
         await agent_service.refresh_available_models()
 
@@ -125,6 +134,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # Cleanup
         logger.info("DeepAgent service shutting down...")
         await agent_pool.stop()
+        await checkpoint_manager.close()
 
     # Create FastAPI app
     app = FastAPI(

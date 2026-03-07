@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     default_thread_id: str = "conversation1"
     default_model: str = "glm-5"
 
+    # PostgreSQL configuration
+    database_url: Optional[str] = None  # e.g., postgresql://user:pass@host:port/db
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_user: str = "deepagent"
+    postgres_password: str = "deepagent"
+    postgres_db: str = "deepagent"
+
     # OpenSandbox configuration
     opensandbox_endpoint: str = "http://localhost:8000"
     opensandbox_api_key: Optional[str] = None
@@ -62,6 +70,25 @@ class Settings(BaseSettings):
     def workspace_dir(self) -> Path:
         """Get the workspace directory path."""
         return self.root_dir / "workspace"
+
+    @property
+    def effective_database_url(self) -> str:
+        """Get the effective database URL, building from components if needed."""
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def async_database_url(self) -> str:
+        """Get async database URL for asyncpg."""
+        url = self.effective_database_url
+        # Convert postgresql:// to postgresql+asyncpg://
+        if url.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + url[len("postgresql://"):]
+        return url
 
 
 def get_settings() -> Settings:

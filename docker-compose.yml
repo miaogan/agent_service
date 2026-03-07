@@ -91,8 +91,12 @@ services:
       - APP_PORT=8001
       - APP_DEBUG=${APP_DEBUG:-false}
       
-      # Database
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-deepagent}:${POSTGRES_PASSWORD:-deepagent_secret}@postgres:5432/${POSTGRES_DB:-deepagent}
+      # PostgreSQL (for conversation persistence)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-deepagent}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-deepagent_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-deepagent}
       
       # Redis
       - REDIS_URL=redis://redis:6379/0
