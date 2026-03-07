@@ -19,4 +19,6 @@ dependencies = [
     "sse-starlette>=1.8.2",
     "fastmcp>=3.0.2",
     "langchain-experimental>=0.4.1",
+    "timedelta>=2020.12.3",
+    "opensandbox-code-interpreter>=0.1.1",
 ]
