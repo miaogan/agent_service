@@ -1,0 +1,38 @@
+{
+  "server": {
+    "name": "deepagent-mcp",
+    "version": "1.0.0",
+    "description": "DeepAgent MCP Server"
+  },
+  "tools": [
+    {
+      "name": "execute",
+      "description": "Execute shell commands",
+      "requires_approval": true
+    },
+    {
+      "name": "read_file",
+      "description": "Read file contents"
+    },
+    {
+      "name": "write_file",
+      "description": "Write content to file",
+      "requires_approval": true
+    },
+    {
+      "name": "list_directory",
+      "description": "List directory contents"
+    },
+    {
+      "name": "search_web",
+      "description": "Search the web"
+    }
+  ],
+  "resources": [
+    {
+      "uri": "file:///workspace",
+      "name": "Workspace",
+      "description": "Agent workspace directory"
+    }
+  ]
+}

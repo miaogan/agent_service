@@ -1,0 +1,154 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DeepAgent Service - Docker Compose
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ───────────────────────────────────────────────────────────────────────────
+  # PostgreSQL Database
+  # ───────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: deepagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-deepagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepagent_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-deepagent}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepagent} -d ${POSTGRES_DB:-deepagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - deepagent-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Redis (Optional - for caching and session management)
+  # ───────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: deepagent-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - deepagent-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # MCP Server
+  # ───────────────────────────────────────────────────────────────────────────
+  mcp-server:
+    image: ghcr.io/modelcontextprotocol/servers:latest
+    container_name: deepagent-mcp
+    restart: unless-stopped
+    environment:
+      - MCP_SERVER_NAME=deepagent-mcp
+      - MCP_TRANSPORT=http
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    volumes:
+      - ./mcp-config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - deepagent-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Agent Service
+  # ───────────────────────────────────────────────────────────────────────────
+  agent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepagent-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp-server:
+        condition: service_healthy
+    environment:
+      # Application
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8001
+      - APP_DEBUG=${APP_DEBUG:-false}
+      
+      # Database
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-deepagent}:${POSTGRES_PASSWORD:-deepagent_secret}@postgres:5432/${POSTGRES_DB:-deepagent}
+      
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+      
+      # LLM Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LITELLM_API_BASE=${LITELLM_API_BASE:-http://litellm:4000}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-glm-5}
+      
+      # MCP Configuration
+      - MCP_SERVER_URL=http://mcp-server:8000/mcp
+      - MCP_LOAD_FAIL_CONTINUE=true
+      
+      # Sandbox
+      - SANDBOX_OUTPUT_HOST_DIR=/app/workspace
+    ports:
+      - "${APP_PORT:-8001}:8001"
+    volumes:
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./skill:/app/skill:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - deepagent-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # LiteLLM Proxy (Optional - for model routing)
+  # ───────────────────────────────────────────────────────────────────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: deepagent-litellm
+    restart: unless-stopped
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-litellm-secret}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    networks:
+      - deepagent-network
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  deepagent-network:
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
