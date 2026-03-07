@@ -3,7 +3,7 @@ name = "agents-service"
 version = "0.5.0"
 description = "AI agent orchestration service with MCP, Skills, and Agent Pool support"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "deepagents>=0.4.3",
     "langchain>=1.2.10",

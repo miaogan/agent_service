@@ -86,6 +86,7 @@ class AgentService:
         system_prompt: Optional[str] = None,
         enable_skills: bool = True,
         enable_mcp: bool = True,
+        interrupt_on: Optional[Dict[str, bool]] = None,
     ) -> Any:
         """
         Create a DeepAgent instance.
@@ -96,6 +97,7 @@ class AgentService:
             system_prompt: Custom system prompt (optional)
             enable_skills: Whether to enable skills middleware
             enable_mcp: Whether to load MCP tools
+            interrupt_on: Tools that require human approval (e.g., {"execute": True})
         """
         backend = FilesystemBackend(
             root_dir=str(self.settings.root_dir),
@@ -173,12 +175,20 @@ class AgentService:
 
         system = system_prompt if system_prompt else default_system
 
+        # Configure interrupt_on for human-in-the-loop
+        interrupt_config = None
+        if interrupt_on:
+            interrupt_config = interrupt_on
+            logger.info(f"Human-in-the-loop enabled for tools: {list(interrupt_on.keys())}")
+
         return create_deep_agent(
             model=llm,
             backend=composite_backend,
             middleware=middleware,
             system_prompt=system,
             tools=tools,
+            interrupt_on=interrupt_config,
+            checkpointer=True,  # Enable checkpointer for interrupt/resume
         )
 
     async def create_agent_from_config(self, config: AgentConfig) -> Any:
@@ -196,6 +206,7 @@ class AgentService:
             system_prompt=config.system_prompt,
             enable_skills=True,  # Always enable skills
             enable_mcp=enable_mcp,
+            interrupt_on=config.interrupt_on,
         )
 
     def validate_model(self, model_name: str) -> bool:

@@ -38,6 +38,10 @@ class AgentConfig(BaseModel):
     mcp_servers: Optional[List[Dict[str, str]]] = Field(
         default=None, description="MCP server configurations"
     )
+    interrupt_on: Optional[Dict[str, bool]] = Field(
+        default=None, 
+        description="Tools that require human approval"
+    )
     max_turns: int = Field(default=50, description="Maximum conversation turns")
     ttl_minutes: int = Field(default=30, description="TTL in minutes after last use")
     created_at: datetime = Field(
@@ -67,6 +71,10 @@ class AgentConfigCreate(BaseModel):
     mcp_servers: Optional[List[Dict[str, str]]] = Field(
         default=None, description="MCP server configurations"
     )
+    interrupt_on: Optional[Dict[str, bool]] = Field(
+        default=None, 
+        description="Tools that require human approval. e.g. {'execute': true, 'write_file': true}"
+    )
     max_turns: int = Field(default=50, ge=1, le=100, description="Maximum conversation turns")
     ttl_minutes: int = Field(default=30, ge=1, le=1440, description="TTL in minutes")
 
@@ -80,6 +88,9 @@ class AgentConfigUpdate(BaseModel):
     tools: Optional[List[str]] = Field(default=None, description="List of tool names")
     mcp_servers: Optional[List[Dict[str, str]]] = Field(
         default=None, description="MCP server configurations"
+    )
+    interrupt_on: Optional[Dict[str, bool]] = Field(
+        default=None, description="Tools requiring human approval"
     )
     max_turns: Optional[int] = Field(default=None, ge=1, le=100)
     ttl_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
@@ -112,6 +123,28 @@ class ChatRequest(BaseModel):
     agent_id: Optional[str] = Field(default=None, description="Agent ID to use")
     model: str = Field(default="glm-5", description="Model name to use (fallback)")
     thread_id: str = Field(default="conversation1", description="Conversation thread ID")
+
+
+class ResumeRequest(BaseModel):
+    """Resume request for interrupted agents."""
+
+    decision: str = Field(..., description="Decision: 'approve', 'reject', or 'edit'")
+    tool_call_id: str = Field(..., description="Tool call ID to resume")
+    edited_args: Optional[Dict[str, Any]] = Field(
+        default=None, 
+        description="Edited arguments (only for 'edit' decision)"
+    )
+    thread_id: str = Field(default="conversation1", description="Conversation thread ID")
+
+
+class InterruptInfo(BaseModel):
+    """Information about an interrupt."""
+
+    tool_name: str
+    tool_call_id: str
+    args: Dict[str, Any]
+    description: str
+    allowed_decisions: List[str] = Field(default_factory=lambda: ["approve", "reject"])
 
 
 class ChatResponse(BaseModel):
