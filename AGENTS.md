@@ -98,32 +98,277 @@ agent_service/
 
 ## HUMAN-IN-THE-LOOP
 
-### 配置
-在 AgentConfig 中设置 `interrupt_on`：
+### 概述
+Human-in-the-Loop (HITL) 允许敏感工具在执行前暂停，等待人工确认后再继续。这是通过 LangGraph 的 interrupt 机制和 checkpointer 实现的。
+
+### 核心要求
+⚠️ **重要：HITL 必须满足以下条件**
+1. **Checkpointer 必需** - 必须配置 `checkpointer`（默认使用 MemorySaver）
+2. **相同的 thread_id** - 中断和恢复必须使用相同的 `thread_id`
+3. **interrupt_on 配置** - 在 AgentConfig 中指定需要确认的工具
+
+### 配置方式
+
+#### 基础配置
 ```python
 AgentConfig(
     agent_id="safe-agent",
+    name="Safe Agent",
+    model="glm-5",
+    tools=["python_sandbox"],
     interrupt_on={
-        "execute": True,      # Shell 命令需确认
-        "write_file": True,   # 写文件需确认
+        "python_sandbox": True,  # 需要人工确认
     }
 )
 ```
 
-### 流程
-1. Agent 执行 `interrupt_on` 中的工具
-2. 流中断，返回 `type: "interrupt"` 事件
-3. 用户发送 approve/reject/edit 决策
-4. 调用 `/chat/{agent_id}/resume` 继续
-
-### Resume 请求
-```json
-{
-    "decision": "approve",
-    "tool_call_id": "call_xxx",
-    "thread_id": "conversation1"
+#### 高级配置
+```python
+interrupt_on={
+    # 方式1：简单配置（允许 approve, edit, reject）
+    "delete_file": True,
+    
+    # 方式2：详细配置（限制允许的决策）
+    "write_file": {"allowed_decisions": ["approve", "reject"]},
+    
+    # 方式3：禁用中断
+    "read_file": False,
 }
 ```
+
+#### 决策类型
+- **approve** - 批准执行（使用原始参数）
+- **edit** - 修改参数后执行
+- **reject** - 拒绝执行（跳过工具调用）
+
+### 完整流程
+
+#### 1. 创建支持 HITL 的 Agent
+```bash
+curl -X POST http://localhost:8001/agents \
+-H "Content-Type: application/json" \
+-d '{
+  "agent_id": "safe-agent",
+  "name": "Safe Agent",
+  "model": "glm-5",
+  "tools": ["python_sandbox"],
+  "interrupt_on": {
+    "python_sandbox": true
+  },
+  "max_turns": 50
+}'
+```
+
+#### 2. 发送聊天消息（触发中断）
+```bash
+curl -X POST http://localhost:8001/chat/safe-agent/stream \
+-H "Content-Type: application/json" \
+-d '{
+  "message": "Use python_sandbox to calculate 2+2",
+  "thread_id": "conversation1"
+}'
+```
+
+#### 3. 接收中断事件（SSE）
+```javascript
+// SSE 流事件
+data: {
+  "type": "interrupt",
+  "interrupts": [
+    {
+      "tool_name": "python_sandbox",
+      "tool_call_id": "call_abc123",
+      "args": {"code": "result = 2+2; print(result)"},
+      "description": "Tool 'python_sandbox' execution requires approval",
+      "allowed_decisions": ["approve", "edit", "reject"]
+    }
+  ]
+}
+data: [DONE]
+```
+
+#### 4. 用户决策并恢复
+
+**批准执行：**
+```bash
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "approve",
+  "tool_call_id": "call_abc123",
+  "thread_id": "conversation1"
+}'
+```
+
+**拒绝执行：**
+```bash
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "reject",
+  "tool_call_id": "call_abc123",
+  "thread_id": "conversation1"
+}'
+```
+
+**编辑参数后执行：**
+```bash
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "edit",
+  "tool_call_id": "call_abc123",
+  "edited_args": {"code": "result = 3+3; print(result)"},
+  "thread_id": "conversation1"
+}'
+```
+
+#### 5. 接收执行结果
+```javascript
+// SSE 流事件（批准后继续）
+data: {"type": "tool_call", "tool": "python_sandbox", "args": {...}}
+data: {"type": "delta", "content": "The result is 4"}
+data: {"type": "done", "content": "The result is 4", "tools_used": [...]}
+data: [DONE]
+```
+
+### 多工具中断
+
+当 Agent 同时调用多个需要确认的工具时，所有中断会批量返回：
+
+```javascript
+data: {
+  "type": "interrupt",
+  "interrupts": [
+    {
+      "tool_name": "delete_file",
+      "tool_call_id": "call_001",
+      "args": {"path": "/tmp/file1.txt"}
+    },
+    {
+      "tool_name": "send_email",
+      "tool_call_id": "call_002",
+      "args": {"to": "user@example.com", "subject": "Test"}
+    }
+  ]
+}
+```
+
+**注意：** resume 时只需提供 `decision`，系统会自动处理所有中断。
+
+### 最佳实践
+
+#### 1. 根据风险等级配置
+```python
+interrupt_on = {
+    # 高风险：完全控制
+    "execute_command": {"allowed_decisions": ["approve", "edit", "reject"]},
+    "delete_file": {"allowed_decisions": ["approve", "edit", "reject"]},
+    
+    # 中风险：批准或拒绝
+    "write_file": {"allowed_decisions": ["approve", "reject"]},
+    "send_email": {"allowed_decisions": ["approve", "reject"]},
+    
+    # 低风险：无需中断
+    "read_file": False,
+    "list_files": False,
+}
+```
+
+#### 2. 始终使用相同的 thread_id
+```python
+# 错误：中断和恢复使用不同的 thread_id
+config1 = {"thread_id": "conv-1"}  # 中断时
+config2 = {"thread_id": "conv-2"}  # 恢复时 ❌
+
+# 正确：使用相同的 thread_id
+config = {"thread_id": "conv-1"}  # 中断和恢复都用 ✅
+```
+
+#### 3. 配置持久化会话（生产环境）
+```bash
+# PostgreSQL 配置（推荐生产环境）
+DATABASE_URL=postgresql://user:password@host:5432/deepagent
+
+# 内存模式（开发环境，服务重启会话丢失）
+# 不配置 PostgreSQL 即使用内存模式
+```
+
+### 技术实现细节
+
+#### Stream 模式
+```python
+# 使用双模式流式传输
+stream_mode=["messages", "updates"]
+
+# messages 模式：传输内容增量
+# updates 模式：检测中断事件
+```
+
+#### 中断数据结构
+```python
+{
+    "__interrupt__": [
+        Interrupt(
+            value={
+                "action_requests": [
+                    {
+                        "name": "tool_name",
+                        "args": {...},
+                        "id": "call_xxx"
+                    }
+                ],
+                "review_configs": [
+                    {
+                        "action_name": "tool_name",
+                        "allowed_decisions": ["approve", "edit", "reject"]
+                    }
+                ]
+            }
+        )
+    ]
+}
+```
+
+#### Resume 命令格式
+```python
+from langgraph.types import Command
+
+# 批准
+Command(resume={"decisions": [{"type": "approve"}]})
+
+# 拒绝
+Command(resume={"decisions": [{"type": "reject"}]})
+
+# 编辑
+Command(resume={
+    "decisions": [{
+        "type": "edit",
+        "edited_action": {
+            "name": "tool_name",
+            "args": {"new": "args"}
+        }
+    }]
+})
+```
+
+### 常见问题
+
+**Q: 为什么工具没有触发中断？**
+A: 检查以下几点：
+1. AgentConfig 中是否正确配置了 `interrupt_on`
+2. 是否使用了 checkpointer（必需）
+3. 是否使用了正确的 stream_mode（`["messages", "updates"]`）
+4. 工具名称是否匹配
+
+**Q: 如何处理多个中断？**
+A: 系统会批量返回所有中断，resume 时只需提供一个 `decision`，系统会应用到所有中断。
+
+**Q: 中断后会话会丢失吗？**
+A: 不会。checkpointer 会保存会话状态。使用内存模式时，服务重启才会丢失；使用 PostgreSQL 时，会话会持久化到数据库。
+
+**Q: 可以动态修改 interrupt_on 配置吗？**
+A: 可以。更新 Agent 配置后，下次创建 Agent 实例时会使用新配置。已运行的 Agent 实例不受影响。
 
 ---
 

@@ -14,9 +14,118 @@
         "url": "http://127.0.0.1:8000/mcp"
       }
     ],
+    "interrupt_on": {
+      "execute": true
+    },
     "max_turns": 100,
     "ttl_minutes": 60,
-    "created_at": "2026-03-07T14:31:07.472531",
-    "updated_at": "2026-03-07T14:31:07.472533"
+    "created_at": "2026-03-07T22:17:53.615217",
+    "updated_at": "2026-03-07T22:17:53.615217"
+  },
+  "interrupt-69dcc21f": {
+    "agent_id": "interrupt-69dcc21f",
+    "name": "Interrupt Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": null,
+    "interrupt_on": {
+      "execute": true
+    },
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T21:57:38.429935",
+    "updated_at": "2026-03-07T21:57:38.429935"
+  },
+  "resume-test-fb0adcd7": {
+    "agent_id": "resume-test-fb0adcd7",
+    "name": "Resume Test Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": null,
+    "interrupt_on": null,
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T21:57:42.353043",
+    "updated_at": "2026-03-07T21:57:42.353043"
+  },
+  "interrupt-test-agent": {
+    "agent_id": "interrupt-test-agent",
+    "name": "Interrupt Test Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": null,
+    "interrupt_on": {
+      "execute": true
+    },
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T22:04:16.396131",
+    "updated_at": "2026-03-07T22:04:16.396131"
+  },
+  "human-loop-agent": {
+    "agent_id": "human-loop-agent",
+    "name": "Human Loop Test Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [],
+    "mcp_servers": [
+      {
+        "name": "test_tools",
+        "transport": "http",
+        "url": "http://127.0.0.1:9000/mcp"
+      }
+    ],
+    "interrupt_on": {
+      "execute_command": true,
+      "write_file": true,
+      "send_email": true
+    },
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T22:08:31.868434",
+    "updated_at": "2026-03-07T22:08:31.868434"
+  },
+  "hitl-test-agent": {
+    "agent_id": "hitl-test-agent",
+    "name": "HITL Test Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": null,
+    "interrupt_on": {
+      "python_sandbox": true
+    },
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T22:09:44.926295",
+    "updated_at": "2026-03-07T22:09:44.926295"
+  },
+  "hitl-final-test": {
+    "agent_id": "hitl-final-test",
+    "name": "HITL Final Test",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": null,
+    "interrupt_on": {
+      "python_sandbox": true
+    },
+    "max_turns": 50,
+    "ttl_minutes": 30,
+    "created_at": "2026-03-07T22:18:01.966303",
+    "updated_at": "2026-03-07T22:18:01.966303"
   }
 }

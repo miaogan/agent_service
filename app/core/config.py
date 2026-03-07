@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # PostgreSQL configuration
     database_url: Optional[str] = None  # e.g., postgresql://user:pass@host:port/db
-    postgres_host: str = "localhost"
+    postgres_host: Optional[str] = None  # Set to None to disable PostgreSQL
     postgres_port: int = 5432
     postgres_user: str = "deepagent"
     postgres_password: str = "deepagent"
@@ -59,7 +59,8 @@ class Settings(BaseSettings):
     opensandbox_api_key: Optional[str] = None
 
     # Sandbox persistent output directory (host path)
-    sandbox_output_host_dir: str = "D:/work_space/python_project/agents_service/workspace"
+    # Use Unix-style path for compatibility
+    sandbox_output_host_dir: str = "/workspace"
 
     @property
     def skill_dir(self) -> Path:

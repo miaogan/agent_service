@@ -4,7 +4,9 @@ FastAPI application entry point.
 Main module that initializes and runs the DeepAgent service.
 """
 
+import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+# ─── Windows Event Loop Fix ───────────────────────────────────────────────────
+
+# On Windows, psycopg/asyncpg requires SelectorEventLoop instead of ProactorEventLoop
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.api.routes import register_routes
 from app.core.config import Settings, get_settings, ensure_directories

@@ -101,6 +101,7 @@ async def test_max_turns_exceeded(sample_config, mock_agent_factory):
     await pool.get(sample_config.agent_id)
 
     # Increment to max
+    result = True
     for i in range(3):
         result = pool.increment_turn(sample_config.agent_id)
 

@@ -78,85 +78,110 @@ async def chat_stream(
             async for event in agent.astream(
                 {"messages": [{"role": "user", "content": request.message}]},
                 config=config,
-                stream_mode="messages",
-                interrupt_before=[],  # We handle interrupts via interrupt_on
+                stream_mode=["messages", "updates"],  # Both modes required for HITL
             ):
-                if not isinstance(event, tuple) or len(event) != 2:
+                # Event format: (metadata, mode, chunk) with 3 elements
+                if not isinstance(event, tuple) or len(event) != 3:
                     continue
-
-                chunk, metadata = event
-
-                # Check for interrupt
-                if hasattr(chunk, "__interrupt__"):
-                    interrupt_data = chunk.__interrupt__
-                    if interrupt_data:
-                        # Send interrupt event to client
-                        interrupt_info = {
-                            "type": "interrupt",
-                            "interrupts": []
-                        }
-                        for intr in interrupt_data if isinstance(interrupt_data, list) else [interrupt_data]:
-                            if isinstance(intr, dict):
-                                interrupt_info["interrupts"].append({
-                                    "tool_name": intr.get("name", "unknown"),
-                                    "tool_call_id": intr.get("id", ""),
-                                    "args": intr.get("args", {}),
-                                    "description": intr.get("description", "Tool execution requires approval"),
-                                    "allowed_decisions": intr.get("allowed_decisions", ["approve", "reject"])
-                                })
-                        yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
-
-                # Tool calls
-                tcalls = (
-                    getattr(chunk, "tool_calls", None)
-                    or getattr(chunk, "tool_call_chunks", None)
-                )
-                if tcalls:
-                    for tc in tcalls:
-                        name = (
-                            tc.get("name")
-                            if isinstance(tc, dict)
-                            else getattr(tc, "name", None)
-                        )
-                        args = (
-                            tc.get("args")
-                            if isinstance(tc, dict)
-                            else getattr(tc, "args", {})
-                        )
-                        tid = (
-                            tc.get("id")
-                            if isinstance(tc, dict)
-                            else getattr(tc, "id", None)
-                        )
-                        if name:
-                            info = {
-                                "type": "tool_call",
-                                "tool": name,
-                                "args": args,
-                                "tool_call_id": tid,
+                
+                metadata, mode, chunk = event
+                
+                # Handle updates mode - check for interrupts
+                if mode == "updates":
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        interrupt_data = chunk["__interrupt__"]
+                        if interrupt_data and len(interrupt_data) > 0:
+                            # Extract interrupt info from Interrupt object
+                            interrupt_obj = interrupt_data[0]
+                            interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
+                            
+                            # Build interrupt event for client
+                            interrupt_info = {
+                                "type": "interrupt",
+                                "interrupts": []
                             }
-                            if info not in tools_used:
-                                tools_used.append(info)
-                                yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
+                            
+                            # Extract action_requests and review_configs
+                            action_requests = interrupt_value.get("action_requests", [])
+                            review_configs = interrupt_value.get("review_configs", [])
+                            
+                            # Create lookup map
+                            config_map = {cfg["action_name"]: cfg for cfg in review_configs}
+                            
+                            # Build interrupt list
+                            for action in action_requests:
+                                tool_name = action.get("name", "unknown")
+                                review_config = config_map.get(tool_name, {})
+                                
+                                interrupt_info["interrupts"].append({
+                                    "tool_name": tool_name,
+                                    "tool_call_id": action.get("id", ""),
+                                    "args": action.get("args", {}),
+                                    "description": f"Tool '{tool_name}' execution requires approval",
+                                    "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
+                                })
+                            
+                            logger.info(f"Interrupt detected for tools: {[intr['tool_name'] for intr in interrupt_info['interrupts']]}")
+                            yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                
+                # Handle messages mode - stream content
+                elif mode == "messages":
+                    if not isinstance(chunk, tuple) or len(chunk) != 2:
+                        continue
+                    
+                    msg, msg_metadata = chunk
 
-                # Content delta
-                delta = ""
-                if hasattr(chunk, "content"):
-                    c = chunk.content
-                    if isinstance(c, str):
-                        delta = c
-                    elif isinstance(c, list):
-                        delta = "".join(
-                            p.get("text", "") if isinstance(p, dict) else str(p)
-                            for p in c
-                        )
+                    # Tool calls
+                    tcalls = (
+                        getattr(msg, "tool_calls", None)
+                        or getattr(msg, "tool_call_chunks", None)
+                    )
+                    if tcalls:
+                        for tc in tcalls:
+                            name = (
+                                tc.get("name")
+                                if isinstance(tc, dict)
+                                else getattr(tc, "name", None)
+                            )
+                            args = (
+                                tc.get("args")
+                                if isinstance(tc, dict)
+                                else getattr(tc, "args", {})
+                            )
+                            tid = (
+                                tc.get("id")
+                                if isinstance(tc, dict)
+                                else getattr(tc, "id", None)
+                            )
+                            if name:
+                                info = {
+                                    "type": "tool_call",
+                                    "tool": name,
+                                    "args": args,
+                                    "tool_call_id": tid,
+                                }
+                                if info not in tools_used:
+                                    tools_used.append(info)
+                                    yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
 
-                if delta:
-                    content_acc += delta
-                    if delta.strip():
-                        yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                    # Content delta
+                    delta = ""
+                    if hasattr(msg, "content"):
+                        c = msg.content
+                        if isinstance(c, str):
+                            delta = c
+                        elif isinstance(c, list):
+                            delta = "".join(
+                                p.get("text", "") if isinstance(p, dict) else str(p)
+                                for p in c
+                            )
+
+                    if delta:
+                        content_acc += delta
+                        if delta.strip():
+                            yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
 
             result = {
                 "type": "done",
@@ -200,15 +225,31 @@ async def resume_stream(
     # Thread config for checkpointing
     config = {"configurable": {"thread_id": request.thread_id}}
 
-    # Build resume command based on decision
+    # Build decision based on user choice
+    # According to deepagents docs, decisions format is:
+    # [{"type": "approve"}] or [{"type": "reject"}] or [{"type": "edit", "edited_action": {...}}]
     if request.decision == "approve":
-        resume_value = {request.tool_call_id: {"decision": "approve"}}
+        decision = {"type": "approve"}
     elif request.decision == "reject":
-        resume_value = {request.tool_call_id: {"decision": "reject"}}
+        decision = {"type": "reject"}
     elif request.decision == "edit":
-        resume_value = {request.tool_call_id: {"decision": "edit", "args": request.edited_args or {}}}
+        if not request.edited_args:
+            raise HTTPException(400, "edited_args required for edit decision")
+        # Get the tool name from state or use default
+        # Note: In real implementation, you'd fetch the tool name from the interrupted state
+        decision = {
+            "type": "edit",
+            "edited_action": {
+                "name": "unknown",  # Will be replaced by actual tool name
+                "args": request.edited_args
+            }
+        }
     else:
         raise HTTPException(400, f"Invalid decision: {request.decision}")
+
+    # Resume command must use {"decisions": [decision1, decision2, ...]}
+    resume_value = {"decisions": [decision]}
+    logger.info(f"Resuming agent with decision: {request.decision} for tool_call_id: {request.tool_call_id}")
 
     async def event_generator() -> AsyncGenerator[str, None]:
         content_acc = ""
@@ -218,60 +259,81 @@ async def resume_stream(
             async for event in agent.astream(
                 Command(resume=resume_value),
                 config=config,
-                stream_mode="messages",
+                stream_mode=["messages", "updates"],  # Both modes required
             ):
-                if not isinstance(event, tuple) or len(event) != 2:
+                # Event format: (metadata, mode, chunk)
+                if not isinstance(event, tuple) or len(event) != 3:
                     continue
-
-                chunk, metadata = event
-
-                # Check for another interrupt
-                if hasattr(chunk, "__interrupt__"):
-                    interrupt_data = chunk.__interrupt__
-                    if interrupt_data:
-                        interrupt_info = {
-                            "type": "interrupt",
-                            "interrupts": []
-                        }
-                        for intr in interrupt_data if isinstance(interrupt_data, list) else [interrupt_data]:
-                            if isinstance(intr, dict):
+                
+                metadata, mode, chunk = event
+                
+                # Handle updates mode - check for interrupts
+                if mode == "updates":
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        interrupt_data = chunk["__interrupt__"]
+                        if interrupt_data and len(interrupt_data) > 0:
+                            interrupt_obj = interrupt_data[0]
+                            interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
+                            
+                            interrupt_info = {
+                                "type": "interrupt",
+                                "interrupts": []
+                            }
+                            
+                            action_requests = interrupt_value.get("action_requests", [])
+                            review_configs = interrupt_value.get("review_configs", [])
+                            config_map = {cfg["action_name"]: cfg for cfg in review_configs}
+                            
+                            for action in action_requests:
+                                tool_name = action.get("name", "unknown")
+                                review_config = config_map.get(tool_name, {})
+                                
                                 interrupt_info["interrupts"].append({
-                                    "tool_name": intr.get("name", "unknown"),
-                                    "tool_call_id": intr.get("id", ""),
-                                    "args": intr.get("args", {}),
-                                    "description": intr.get("description", "Tool execution requires approval"),
-                                    "allowed_decisions": intr.get("allowed_decisions", ["approve", "reject"])
+                                    "tool_name": tool_name,
+                                    "tool_call_id": action.get("id", ""),
+                                    "args": action.get("args", {}),
+                                    "description": f"Tool '{tool_name}' execution requires approval",
+                                    "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
                                 })
-                        yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
+                            
+                            logger.info(f"Another interrupt detected during resume")
+                            yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                
+                # Handle messages mode - stream content
+                elif mode == "messages":
+                    if not isinstance(chunk, tuple) or len(chunk) != 2:
+                        continue
+                    
+                    msg, msg_metadata = chunk
 
-                # Tool calls
-                tcalls = getattr(chunk, "tool_calls", None) or getattr(chunk, "tool_call_chunks", None)
-                if tcalls:
-                    for tc in tcalls:
-                        name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                        args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
-                        tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-                        if name:
-                            info = {"type": "tool_call", "tool": name, "args": args, "tool_call_id": tid}
-                            if info not in tools_used:
-                                tools_used.append(info)
-                                yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
+                    # Tool calls
+                    tcalls = getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None)
+                    if tcalls:
+                        for tc in tcalls:
+                            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                            args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+                            tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                            if name:
+                                info = {"type": "tool_call", "tool": name, "args": args, "tool_call_id": tid}
+                                if info not in tools_used:
+                                    tools_used.append(info)
+                                    yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
 
-                # Content delta
-                delta = ""
-                if hasattr(chunk, "content"):
-                    c = chunk.content
-                    if isinstance(c, str):
-                        delta = c
-                    elif isinstance(c, list):
-                        delta = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in c)
+                    # Content delta
+                    delta = ""
+                    if hasattr(msg, "content"):
+                        c = msg.content
+                        if isinstance(c, str):
+                            delta = c
+                        elif isinstance(c, list):
+                            delta = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in c)
 
-                if delta:
-                    content_acc += delta
-                    if delta.strip():
-                        yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                    if delta:
+                        content_acc += delta
+                        if delta.strip():
+                            yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
 
             result = {"type": "done", "content": content_acc, "tools_used": tools_used, "agent_id": agent_id}
             yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
@@ -329,7 +391,7 @@ def list_agent_configs(storage: AgentConfigStorage) -> list[AgentConfig]:
     return storage.load_all()
 
 
-def update_agent_config(
+async def update_agent_config(
     agent_id: str,
     config_update: AgentConfigUpdate,
     storage: AgentConfigStorage,
@@ -348,20 +410,20 @@ def update_agent_config(
     existing.updated_at = datetime.now()
     storage.save(existing)
     agent_pool.register_config(existing)
-    asyncio.get_event_loop().run_until_complete(agent_pool.remove(agent_id))
+    await agent_pool.remove(agent_id)
 
     logger.info(f"Updated agent config: {agent_id}")
     return existing
 
 
-def delete_agent_config(
+async def delete_agent_config(
     agent_id: str, storage: AgentConfigStorage, agent_pool: AgentPool
 ) -> dict:
     """Delete an agent configuration."""
     if not storage.delete(agent_id):
         raise HTTPException(404, f"Agent not found: {agent_id}")
 
-    asyncio.get_event_loop().run_until_complete(agent_pool.remove(agent_id))
+    await agent_pool.remove(agent_id)
 
     logger.info(f"Deleted agent config: {agent_id}")
     return {"status": "deleted", "agent_id": agent_id}
@@ -427,12 +489,12 @@ def register_routes(
     @app.put("/agents/{agent_id}", response_model=AgentConfig)
     async def update_agent(agent_id: str, config_update: AgentConfigUpdate):
         """Update an existing agent configuration."""
-        return update_agent_config(agent_id, config_update, storage, agent_pool)
+        return await update_agent_config(agent_id, config_update, storage, agent_pool)
 
     @app.delete("/agents/{agent_id}")
     async def delete_agent(agent_id: str):
         """Delete an agent configuration."""
-        return delete_agent_config(agent_id, storage, agent_pool)
+        return await delete_agent_config(agent_id, storage, agent_pool)
 
     @app.get("/pool/stats")
     async def pool_stats():

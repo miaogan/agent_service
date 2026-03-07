@@ -85,11 +85,11 @@ class AgentPool:
         self._configs[config.agent_id] = config
         logger.debug(f"Registered agent config: {config.agent_id}")
 
-    def unregister_config(self, agent_id: str) -> bool:
+    async def unregister_config(self, agent_id: str) -> bool:
         """Unregister an agent configuration and remove from pool."""
         if agent_id in self._configs:
             del self._configs[agent_id]
-        return asyncio.get_event_loop().run_until_complete(self.remove(agent_id))
+        return await self.remove(agent_id)
 
     async def get(self, agent_id: str) -> Optional[PooledAgent]:
         """

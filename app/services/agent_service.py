@@ -189,6 +189,9 @@ class AgentService:
             checkpointer = checkpoint_manager.saver
             logger.info("Using PostgreSQL checkpointer for conversation persistence")
         else:
+            # Use MemorySaver for in-memory checkpointer
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
             logger.info("Using in-memory checkpointer")
 
         return create_deep_agent(
@@ -198,7 +201,7 @@ class AgentService:
             system_prompt=system,
             tools=tools,
             interrupt_on=interrupt_config,
-            checkpointer=checkpointer if checkpointer else True,
+            checkpointer=checkpointer,
         )
 
     async def create_agent_from_config(self, config: AgentConfig) -> Any:

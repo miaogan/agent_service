@@ -119,23 +119,150 @@ GET /pool/stats       # Agent 池状态
 
 ## Human-in-the-Loop
 
+Human-in-the-Loop (HITL) 允许敏感工具在执行前暂停，等待人工确认后再继续。
+
+### 配置方式
+
 配置 Agent 时，通过 `interrupt_on` 指定需要人工确认的工具：
 
 ```json
 {
     "agent_id": "safe-agent",
     "name": "Safe Agent",
+    "model": "glm-5",
+    "tools": ["python_sandbox"],
     "interrupt_on": {
-        "execute": true,      // Shell 命令需确认
-        "write_file": true    // 写文件需确认
+        "python_sandbox": true
     }
 }
 ```
 
+### 高级配置
+
+```json
+{
+    "interrupt_on": {
+        // 高风险：完全控制（批准、编辑、拒绝）
+        "delete_file": {"allowed_decisions": ["approve", "edit", "reject"]},
+        
+        // 中等风险：只能批准或拒绝
+        "write_file": {"allowed_decisions": ["approve", "reject"]},
+        
+        // 低风险：无需中断
+        "read_file": false
+    }
+}
+```
+
+### 使用流程
+
+#### 1. 创建支持 HITL 的 Agent
+
+```bash
+curl -X POST http://localhost:8001/agents \
+-H "Content-Type: application/json" \
+-d '{
+  "agent_id": "safe-agent",
+  "name": "Safe Agent",
+  "model": "glm-5",
+  "tools": ["python_sandbox"],
+  "interrupt_on": {"python_sandbox": true}
+}'
+```
+
+#### 2. 发送聊天消息
+
+```bash
+curl -X POST http://localhost:8001/chat/safe-agent/stream \
+-H "Content-Type: application/json" \
+-d '{
+  "message": "Calculate 2+2 using python_sandbox",
+  "thread_id": "conversation1"
+}'
+```
+
+#### 3. 接收中断事件
+
+当 Agent 执行工具时，会中断并返回：
+
+```javascript
+data: {
+  "type": "interrupt",
+  "interrupts": [
+    {
+      "tool_name": "python_sandbox",
+      "tool_call_id": "call_abc123",
+      "args": {"code": "result = 2+2; print(result)"},
+      "description": "Tool 'python_sandbox' execution requires approval",
+      "allowed_decisions": ["approve", "edit", "reject"]
+    }
+  ]
+}
+```
+
+#### 4. 用户决策
+
 当 Agent 执行这些工具时，会中断并等待用户决策：
+
 - **approve** - 批准执行
 - **reject** - 拒绝执行
 - **edit** - 修改参数后执行
+
+```bash
+# 批准执行
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "approve",
+  "tool_call_id": "call_abc123",
+  "thread_id": "conversation1"
+}'
+
+# 拒绝执行
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "reject",
+  "tool_call_id": "call_abc123",
+  "thread_id": "conversation1"
+}'
+
+# 编辑参数后执行
+curl -X POST http://localhost:8001/chat/safe-agent/resume \
+-H "Content-Type: application/json" \
+-d '{
+  "decision": "edit",
+  "tool_call_id": "call_abc123",
+  "edited_args": {"code": "result = 3+3; print(result)"},
+  "thread_id": "conversation1"
+}'
+```
+
+### 核心要求
+
+⚠️ **重要：HITL 必须满足以下条件**
+1. **Checkpointer 必需** - 系统已自动配置 MemorySaver
+2. **相同的 thread_id** - 中断和恢复必须使用相同的 `thread_id`
+3. **interrupt_on 配置** - 在 Agent 配置中指定需要确认的工具
+
+### 最佳实践
+
+```python
+# 根据风险等级配置
+interrupt_on = {
+    # 高风险操作：完全控制
+    "execute_command": {"allowed_decisions": ["approve", "edit", "reject"]},
+    "delete_file": {"allowed_decisions": ["approve", "edit", "reject"]},
+    
+    # 中等风险：批准或拒绝
+    "send_email": {"allowed_decisions": ["approve", "reject"]},
+    
+    # 低风险：无需中断
+    "read_file": False,
+}
+```
+
+更多详细信息请参考 [AGENTS.md](./AGENTS.md#human-in-the-loop)
 
 ## SSE 事件格式
 
