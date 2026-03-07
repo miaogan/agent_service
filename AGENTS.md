@@ -2,23 +2,24 @@
 
 **Generated:** 2026-03-07
 **Language:** Python 3.12+
-**Framework:** FastAPI + LangChain + DeepAgents
-**Size:** Medium (~1500 lines)
+**Framework:** FastAPI + LangChain + DeepAgents + LangGraph
+**Size:** Medium (~2000 lines)
 
 ---
 
 ## OVERVIEW
 
-FastAPI 微服务，用于 AI Agent 编排，支持 MCP 协议、技能系统、Agent 池化管理、Human-in-the-Loop。
+FastAPI 微服务，用于 AI Agent 编排，支持 MCP 协议、技能系统、Agent 池化管理、Human-in-the-Loop、PostgreSQL 会话持久化。
 
 **核心功能：**
 - Agent 池化管理（TTL、轮次限制、后台清理）
 - 配置持久化（JSON 存储）
 - Human-in-the-Loop（敏感工具人工确认）
+- 会话持久化（PostgreSQL checkpointer）
 - 流式聊天（SSE）
 - Web UI（开箱即用）
 
-**技术栈：** FastAPI, Uvicorn, LangChain, DeepAgents, Pydantic, LiteLLM
+**技术栈：** FastAPI, Uvicorn, LangChain, DeepAgents, LangGraph, PostgreSQL, asyncpg
 
 ---
 
@@ -32,6 +33,7 @@ agent_service/
 │   │   └── routes.py        # API 路由（chat, agents CRUD, resume）
 │   ├── core/
 │   │   ├── config.py        # Settings 配置类
+│   │   ├── checkpoint.py    # PostgreSQL checkpointer 管理
 │   │   ├── tools.py         # python_sandbox 工具
 │   │   └── storage.py       # AgentConfigStorage JSON 持久化
 │   ├── models/
@@ -45,6 +47,8 @@ agent_service/
 ├── tests/                   # 测试文件
 ├── data/                    # 运行时数据
 │   └── agent_configs.json   # Agent 配置持久化
+├── Dockerfile
+├── docker-compose.yml
 └── pyproject.toml
 ```
 
@@ -60,6 +64,7 @@ agent_service/
 | **Agent 工厂** | `app/services/agent_service.py` | 创建 DeepAgent |
 | **配置模型** | `app/models/schemas.py` | AgentConfig, ChatRequest |
 | **设置** | `app/core/config.py` | Settings 类 |
+| **会话持久化** | `app/core/checkpoint.py` | PostgreSQL checkpointer |
 | **存储** | `app/core/storage.py` | JSON 持久化 |
 
 ---
@@ -156,12 +161,52 @@ AgentConfig(
 ## ENVIRONMENT VARIABLES
 
 ```bash
+# API Keys
 OPENAI_API_KEY=your-key
 LITELLM_API_BASE=http://127.0.0.1:4000
+DEFAULT_MODEL=glm-5
+
+# MCP Server
 MCP_SERVER_URL=http://127.0.0.1:8000/mcp
 MCP_LOAD_FAIL_CONTINUE=true
-DEFAULT_MODEL=glm-5
+
+# PostgreSQL (会话持久化)
+DATABASE_URL=postgresql://user:password@host:5432/database
+# 或单独配置：
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=deepagent
+POSTGRES_PASSWORD=secret
+POSTGRES_DB=deepagent
 ```
+
+---
+
+## SESSION PERSISTENCE
+
+Agent 会话使用 PostgreSQL `langgraph-checkpoint-postgres` 存储。
+
+### 自动建表
+启动时自动创建：
+- `checkpoints` - 检查点数据
+- `checkpoint_blobs` - 二进制数据
+- `checkpoint_writes` - 写入记录
+- `checkpoint_channels` - 通道状态
+
+### 配置方式
+```python
+# 方式1：完整 URL
+DATABASE_URL=postgresql://user:pass@host:5432/db
+
+# 方式2：单独配置
+POSTGRES_HOST=localhost
+POSTGRES_USER=deepagent
+POSTGRES_PASSWORD=secret
+```
+
+### 降级策略
+- PostgreSQL 未配置 → 使用内存 checkpointer
+- 连接失败 → 自动降级 + 日志警告
 
 ---
 

@@ -43,8 +43,10 @@ docker compose ps
 | agent-service | 8001 | 主 API 服务 |
 | mcp-server | 8000 | MCP 工具服务 |
 | litellm | 4000 | LLM 代理服务 |
-| postgres | 5432 | PostgreSQL 数据库 |
+| postgres | 5432 | PostgreSQL 数据库（会话持久化）|
 | redis | 6379 | Redis 缓存 |
+
+> **PostgreSQL 用途**：存储 Agent 会话状态，支持对话历史持久化和中断恢复。
 
 ## 生产部署
 

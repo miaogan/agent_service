@@ -1,6 +1,6 @@
 # DeepAgent Service
 
-基于 FastAPI 构建的 Agent 服务，支持 MCP 协议、Skills 技能系统、Agent 池化管理，以及 Human-in-the-Loop 人工干预。
+基于 FastAPI 构建的 Agent 服务，支持 MCP 协议、Skills 技能系统、Agent 池化管理、Human-in-the-Loop 人工干预、PostgreSQL 会话持久化。
 
 ## 功能特性
 
@@ -8,6 +8,7 @@
 - ✅ **MCP 协议支持** - 动态加载 MCP 工具
 - ✅ **Skills 技能系统** - 文件系统操作与技能执行
 - ✅ **Human-in-the-Loop** - 敏感工具执行需人工确认
+- ✅ **会话持久化** - PostgreSQL 存储对话历史，支持中断恢复
 - ✅ **流式响应** - SSE 实时输出
 - ✅ **Web UI** - 开箱即用的聊天界面
 - ✅ **配置持久化** - Agent 配置自动保存
@@ -22,6 +23,7 @@ agent_service/
 │   │   └── routes.py        # API 路由
 │   ├── core/
 │   │   ├── config.py        # 配置管理
+│   │   ├── checkpoint.py    # PostgreSQL 会话持久化
 │   │   ├── tools.py         # python_sandbox 工具
 │   │   └── storage.py       # JSON 持久化
 │   ├── models/
@@ -34,6 +36,8 @@ agent_service/
 ├── skill/                   # 技能模块目录
 ├── tests/                   # 测试文件
 ├── data/                    # 运行时数据
+├── Dockerfile
+├── docker-compose.yml
 └── pyproject.toml
 ```
 
@@ -153,11 +157,28 @@ data: {"type": "done", "content": "...", "tools_used": [...]}
 
 ```bash
 # .env
+
+# ─── API Keys ──────────────────────────────────────────
 OPENAI_API_KEY=your-key
+
+# ─── LLM Configuration ─────────────────────────────────
 LITELLM_API_BASE=http://127.0.0.1:4000
-MCP_SERVER_URL=http://127.0.0.1:8000/mcp
 DEFAULT_MODEL=glm-5
+
+# ─── MCP Server ────────────────────────────────────────
+MCP_SERVER_URL=http://127.0.0.1:8000/mcp
+
+# ─── PostgreSQL (会话持久化) ───────────────────────────
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=deepagent
+POSTGRES_PASSWORD=secret
+POSTGRES_DB=deepagent
+# 或使用完整 URL：
+# DATABASE_URL=postgresql://user:password@host:5432/database
 ```
+
+> **注意**：PostgreSQL 为可选配置。若未配置，将使用内存存储会话。
 
 ## 开发
 
