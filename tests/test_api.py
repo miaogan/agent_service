@@ -131,3 +131,50 @@ def test_pool_stats(client):
     data = response.json()
     assert "total_configs" in data
     assert "active_agents" in data
+
+
+def test_create_agent_with_interrupt_on(client):
+    """Test creating an agent with interrupt_on configuration."""
+    response = client.post(
+        "/agents",
+        json={
+            "agent_id": "safe-agent",
+            "name": "Safe Agent",
+            "model": "glm-5",
+            "interrupt_on": {"execute": True, "write_file": True},
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["agent_id"] == "safe-agent"
+    assert data["interrupt_on"] == {"execute": True, "write_file": True}
+
+
+def test_update_agent_interrupt_on(client):
+    """Test updating interrupt_on configuration."""
+    # Create an agent first
+    client.post(
+        "/agents",
+        json={
+            "agent_id": "test-interrupt",
+            "name": "Test Interrupt",
+            "model": "glm-5",
+        },
+    )
+
+    # Update with interrupt_on
+    response = client.put(
+        "/agents/test-interrupt",
+        json={"interrupt_on": {"execute": True}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["interrupt_on"] == {"execute": True}
+
+
+def test_list_models(client):
+    """Test listing available models."""
+    response = client.get("/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert "models" in data
