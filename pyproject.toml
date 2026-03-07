@@ -1,7 +1,7 @@
 [project]
 name = "agents-service"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.5.0"
+description = "AI agent orchestration service with MCP, Skills, and Agent Pool support"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -16,9 +16,19 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
     "sse-starlette>=1.8.2",
     "fastmcp>=3.0.2",
     "langchain-experimental>=0.4.1",
     "timedelta>=2020.12.3",
     "opensandbox-code-interpreter>=0.1.1",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
 ]

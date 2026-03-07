@@ -1,0 +1,22 @@
+{
+  "default": {
+    "agent_id": "default",
+    "name": "Default Agent",
+    "model": "glm-5",
+    "system_prompt": null,
+    "tools": [
+      "python_sandbox"
+    ],
+    "mcp_servers": [
+      {
+        "name": "default_mcp",
+        "transport": "http",
+        "url": "http://127.0.0.1:8000/mcp"
+      }
+    ],
+    "max_turns": 100,
+    "ttl_minutes": 60,
+    "created_at": "2026-03-07T14:31:07.472531",
+    "updated_at": "2026-03-07T14:31:07.472533"
+  }
+}
