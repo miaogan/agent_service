@@ -9,14 +9,11 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 # ─── Windows Event Loop Fix ───────────────────────────────────────────────────
 
@@ -162,20 +159,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     # Register routes
     register_routes(app, agent_service, agent_pool, storage)
-
-    # Mount static files for web UI
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-        logger.info(f"Static files mounted from {static_dir}")
-
-    # Serve index.html at root
-    @app.get("/", include_in_schema=False)
-    async def root():
-        index_path = static_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        return {"message": "DeepAgent API", "docs": "/docs"}
 
     # Store services in app state for access in routes
     app.state.agent_service = agent_service
