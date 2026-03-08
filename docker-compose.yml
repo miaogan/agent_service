@@ -90,26 +90,26 @@ services:
       - APP_HOST=0.0.0.0
       - APP_PORT=8001
       - APP_DEBUG=${APP_DEBUG:-false}
-      
+
       # PostgreSQL (for conversation persistence)
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-deepagent}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-deepagent_secret}
       - POSTGRES_DB=${POSTGRES_DB:-deepagent}
-      
+
       # Redis
       - REDIS_URL=redis://redis:6379/0
-      
+
       # LLM Configuration
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LITELLM_API_BASE=${LITELLM_API_BASE:-http://litellm:4000}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-glm-5}
-      
+
       # MCP Configuration
       - MCP_SERVER_URL=http://mcp-server:8000/mcp
       - MCP_LOAD_FAIL_CONTINUE=true
-      
+
       # Sandbox
       - SANDBOX_OUTPUT_HOST_DIR=/app/workspace
     ports:
@@ -126,22 +126,6 @@ services:
     networks:
       - deepagent-network
 
-  # ───────────────────────────────────────────────────────────────────────────
-  # LiteLLM Proxy (Optional - for model routing)
-  # ───────────────────────────────────────────────────────────────────────────
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    container_name: deepagent-litellm
-    restart: unless-stopped
-    environment:
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-litellm-secret}
-    volumes:
-      - ./litellm-config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    ports:
-      - "${LITELLM_PORT:-4000}:4000"
-    networks:
-      - deepagent-network
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks

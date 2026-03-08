@@ -85,19 +85,22 @@ async def chat_stream(
     async def event_generator() -> AsyncGenerator[str, None]:
         content_acc = ""
         tools_used = []
+        event_count = 0
+
         try:
             async for event in agent.astream(
                 {"messages": [{"role": "user", "content": request.message}]},
                 config=config,
                 stream_mode=["messages", "updates"],  # Both modes required for HITL
             ):
+                event_count += 1
                 # Event format: (mode, value) with 2 elements
                 if not isinstance(event, tuple) or len(event) != 2:
                     logger.warning(f"Unexpected event format: {type(event)}, len={len(event) if isinstance(event, tuple) else 'not tuple'}")
                     continue
-                
+
                 mode, value = event
-                
+
                 # Handle updates mode - check for interrupts
                 if mode == "updates":
                     if isinstance(value, dict) and "__interrupt__" in value:
@@ -106,25 +109,25 @@ async def chat_stream(
                             # Extract interrupt info from Interrupt object
                             interrupt_obj = interrupt_data[0]
                             interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
-                            
+
                             # Build interrupt event for client
                             interrupt_info = {
                                 "type": "interrupt",
                                 "interrupts": []
                             }
-                            
+
                             # Extract action_requests and review_configs
                             action_requests = interrupt_value.get("action_requests", [])
                             review_configs = interrupt_value.get("review_configs", [])
-                            
+
                             # Create lookup map
                             config_map = {cfg["action_name"]: cfg for cfg in review_configs}
-                            
+
                             # Build interrupt list
                             for action in action_requests:
                                 tool_name = action.get("name", "unknown")
                                 review_config = config_map.get(tool_name, {})
-                                
+
                                 interrupt_info["interrupts"].append({
                                     "tool_name": tool_name,
                                     "tool_call_id": action.get("id", ""),
@@ -132,18 +135,19 @@ async def chat_stream(
                                     "description": f"Tool '{tool_name}' execution requires approval",
                                     "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
                                 })
-                            
+
                             logger.info(f"Interrupt detected for tools: {[intr['tool_name'] for intr in interrupt_info['interrupts']]}")
                             yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
                             yield "data: [DONE]\n\n"
                             return
-                
+
                 # Handle messages mode - stream content
                 elif mode == "messages":
                     # value is (message_chunk, metadata_dict)
                     if not isinstance(value, tuple) or len(value) != 2:
+                        logger.warning(f"Messages mode: unexpected value format: {type(value)}, len={len(value) if isinstance(value, tuple) else 'not tuple'}")
                         continue
-                    
+
                     msg, msg_metadata = value
 
                     # Tool calls
@@ -151,6 +155,8 @@ async def chat_stream(
                         getattr(msg, "tool_calls", None)
                         or getattr(msg, "tool_call_chunks", None)
                     )
+                    if tcalls:
+                        logger.info(f"Tool calls detected: {len(tcalls)} calls")
                     if tcalls:
                         for tc in tcalls:
                             name = (
@@ -190,6 +196,23 @@ async def chat_stream(
                                 p.get("text", "") if isinstance(p, dict) else str(p)
                                 for p in c
                             )
+                        else:
+                            # Handle other content types (e.g., None, empty)
+                            if c is not None:
+                                delta = str(c)
+
+                    # Also check for reasoning_content (used by some models like qwen)
+                    if not delta and hasattr(msg, "additional_kwargs"):
+                        reasoning = msg.additional_kwargs.get("reasoning_content", "")
+                        if reasoning:
+                            delta = reasoning
+
+                    # Check for tool_call_chunks with reasoning_content
+                    if not delta and tcalls:
+                        for tc in tcalls:
+                            if isinstance(tc, dict) and "reasoning_content" in tc:
+                                delta = tc["reasoning_content"]
+                                break
 
                     if delta:
                         content_acc += delta
@@ -208,7 +231,9 @@ async def chat_stream(
             yield "data: [DONE]\n\n"
 
         except Exception as e:
+            import traceback
             logger.error(f"Streaming error: {type(e).__name__} - {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -277,9 +302,9 @@ async def resume_stream(
                 # Event format: (mode, value)
                 if not isinstance(event, tuple) or len(event) != 2:
                     continue
-                
+
                 mode, value = event
-                
+
                 # Handle updates mode - check for interrupts
                 if mode == "updates":
                     if isinstance(value, dict) and "__interrupt__" in value:
@@ -287,20 +312,20 @@ async def resume_stream(
                         if interrupt_data and len(interrupt_data) > 0:
                             interrupt_obj = interrupt_data[0]
                             interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
-                            
+
                             interrupt_info = {
                                 "type": "interrupt",
                                 "interrupts": []
                             }
-                            
+
                             action_requests = interrupt_value.get("action_requests", [])
                             review_configs = interrupt_value.get("review_configs", [])
                             config_map = {cfg["action_name"]: cfg for cfg in review_configs}
-                            
+
                             for action in action_requests:
                                 tool_name = action.get("name", "unknown")
                                 review_config = config_map.get(tool_name, {})
-                                
+
                                 interrupt_info["interrupts"].append({
                                     "tool_name": tool_name,
                                     "tool_call_id": action.get("id", ""),
@@ -308,17 +333,17 @@ async def resume_stream(
                                     "description": f"Tool '{tool_name}' execution requires approval",
                                     "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
                                 })
-                            
+
                             logger.info(f"Another interrupt detected during resume")
                             yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
                             yield "data: [DONE]\n\n"
                             return
-                
+
                 # Handle messages mode - stream content
                 elif mode == "messages":
                     if not isinstance(value, tuple) or len(value) != 2:
                         continue
-                    
+
                     msg, msg_metadata = value
 
                     # Tool calls

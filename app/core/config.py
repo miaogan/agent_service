@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     mcp_default_url: str = "http://127.0.0.1:8000/mcp"
     mcp_load_fail_continue: bool = True
     default_thread_id: str = "conversation1"
-    default_model: str = "glm-5"
+    default_model: str = "qwen3.5:9b"
 
     # PostgreSQL configuration
     database_url: Optional[str] = None  # e.g., postgresql://user:pass@host:port/db

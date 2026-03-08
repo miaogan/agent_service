@@ -3,7 +3,7 @@ API request/response schemas.
 
 Pydantic models for request validation and response serialization.
 """
-
+import os
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -39,13 +39,13 @@ class AgentConfig(BaseModel):
         default=None, description="MCP server configurations"
     )
     interrupt_on: Optional[Dict[str, bool]] = Field(
-        default=None, 
+        default=None,
         description="Tools that require human approval"
     )
     max_turns: int = Field(default=50, description="Maximum conversation turns")
     ttl_minutes: int = Field(default=30, description="TTL in minutes after last use")
     persistent: bool = Field(
-        default=False, 
+        default=False,
         description="If True, agent will never be destroyed due to TTL or turn limits"
     )
     created_at: datetime = Field(
@@ -76,7 +76,7 @@ class AgentConfigCreate(BaseModel):
         default=None, description="MCP server configurations"
     )
     interrupt_on: Optional[Dict[str, bool]] = Field(
-        default=None, 
+        default=None,
         description="Tools that require human approval. e.g. {'execute': true, 'write_file': true}"
     )
     max_turns: int = Field(default=50, ge=1, le=100, description="Maximum conversation turns")
@@ -131,8 +131,8 @@ class ChatRequest(BaseModel):
     """Chat request model."""
 
     message: str = Field(..., min_length=1, description="User message")
-    agent_id: Optional[str] = Field(default=None, description="Agent ID to use")
-    model: str = Field(default="glm-5", description="Model name to use (fallback)")
+    agent_id: Optional[str] = Field(default="default", description="Agent ID to use")
+    model: str = Field(default=os.getenv("DEFAULT_MODEL", "glm-5"), description="Model name to use (fallback)")
     thread_id: str = Field(default="conversation1", description="Conversation thread ID")
 
 
@@ -146,7 +146,7 @@ class ResumeRequest(BaseModel):
         description="Tool name (required for 'edit' decision)"
     )
     edited_args: Optional[Dict[str, Any]] = Field(
-        default=None, 
+        default=None,
         description="Edited arguments (only for 'edit' decision)"
     )
     thread_id: str = Field(default="conversation1", description="Conversation thread ID")

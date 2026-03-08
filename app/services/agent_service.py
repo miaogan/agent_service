@@ -138,9 +138,9 @@ class AgentService:
 
         # Build tools list
         from app.core.tools import get_tools_by_names
-        
+
         tools = []
-        
+
         # Load tools from registry if specified
         if tool_names:
             tools.extend(get_tools_by_names(tool_names, self.settings))
