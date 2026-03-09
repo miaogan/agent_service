@@ -486,19 +486,13 @@ def register_routes(
 
     @app.post("/chat/stream")
     async def _chat_stream(request: ChatRequest):
-        """Streaming chat endpoint."""
+        """Streaming chat endpoint. Use agent_id in request body to specify agent."""
         return await chat_stream(request, agent_service, agent_pool)
 
-    @app.post("/chat/{agent_id}/stream")
-    async def _chat_with_agent(agent_id: str, request: ChatRequest):
-        """Streaming chat with a specific agent from the pool."""
-        request.agent_id = agent_id
-        return await chat_stream(request, agent_service, agent_pool)
-
-    @app.post("/chat/{agent_id}/resume")
-    async def _resume_agent(agent_id: str, request: ResumeRequest):
-        """Resume an interrupted agent with a decision."""
-        return await resume_stream(agent_id, request, agent_service, agent_pool)
+    @app.post("/chat/resume")
+    async def _resume_agent(request: ResumeRequest):
+        """Resume an interrupted agent with a decision. Use agent_id in request body."""
+        return await resume_stream(request.agent_id, request, agent_service, agent_pool)
 
     @app.get("/health")
     async def health_check():

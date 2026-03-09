@@ -139,6 +139,7 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     """Resume request for interrupted agents."""
 
+    agent_id: str = Field(..., description="Agent ID to resume")
     decision: str = Field(..., description="Decision: 'approve', 'reject', or 'edit'")
     tool_call_id: str = Field(..., description="Tool call ID to resume")
     tool_name: Optional[str] = Field(
