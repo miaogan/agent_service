@@ -50,11 +50,16 @@ class CheckpointManager:
 
             logger.info(f"Connecting to PostgreSQL: {log_url}")
 
-            # Create connection pool
+            # Create connection pool with autocommit=True
+            # Required for CREATE INDEX CONCURRENTLY in LangGraph migrations
             self._pool = AsyncConnectionPool(
                 conninfo=db_url,
                 max_size=10,
                 open=False,
+                kwargs={
+                    "autocommit": True,  # Required for CREATE INDEX CONCURRENTLY
+                    "prepare_threshold": 0,  # Disable prepared statements for better compatibility
+                },
             )
 
             # Open the pool
@@ -63,7 +68,8 @@ class CheckpointManager:
             # Create checkpointer with pool
             self._saver = AsyncPostgresSaver(self._pool)
 
-            # Setup tables (creates checkpoint_writes, checkpoint_blobs, checkpoints, checkpoint_blobs, checkpoint_migrations)
+            # Setup tables (creates checkpoint_writes, checkpoint_blobs, checkpoints, etc.)
+            # Migrations 6, 7, 8 use CREATE INDEX CONCURRENTLY which requires autocommit
             await self._saver.setup()
 
             logger.info("PostgreSQL checkpointer initialized successfully")
