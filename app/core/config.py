@@ -84,7 +84,11 @@ class Settings(BaseSettings):
 
     @property
     def async_database_url(self) -> str:
-        """Get async database URL for asyncpg."""
+        """Get async database URL.
+
+        Note: This returns postgresql+asyncpg:// format for asyncpg driver.
+        For psycopg3 (used by langgraph checkpoint), use effective_database_url instead.
+        """
         url = self.effective_database_url
         # Convert postgresql:// to postgresql+asyncpg://
         if url.startswith("postgresql://"):

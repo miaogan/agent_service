@@ -108,11 +108,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         # Initialize PostgreSQL checkpointer
         checkpoint_manager = get_checkpoint_manager()
-        try:
-            await checkpoint_manager.setup()
-            logger.info("PostgreSQL checkpointer initialized")
-        except Exception as e:
-            logger.warning(f"PostgreSQL checkpointer not available, using in-memory: {e}")
+        await checkpoint_manager.setup()
+
+        if checkpoint_manager.saver:
+            logger.info("PostgreSQL checkpointer ready for conversation persistence")
+        else:
+            logger.warning("Using in-memory checkpointer (conversations will not persist across restarts)")
 
         # Load available models
         await agent_service.refresh_available_models()

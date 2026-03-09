@@ -2,7 +2,7 @@
   "default": {
     "agent_id": "default",
     "name": "Default Agent",
-    "model": "qwen3.5-9b",
+    "model": "qwen3.5:9b",
     "system_prompt": null,
     "tools": [
       "python_sandbox"
@@ -20,7 +20,7 @@
     "max_turns": 100,
     "ttl_minutes": 60,
     "persistent": true,
-    "created_at": "2026-03-08T18:29:39.658850",
-    "updated_at": "2026-03-08T18:29:39.658850"
+    "created_at": "2026-03-09T15:01:43.568844",
+    "updated_at": "2026-03-09T15:01:43.568846"
   }
 }
