@@ -130,12 +130,18 @@ async def get_history(
                     tool_calls = []
                     for tc in tcalls:
                         if isinstance(tc, dict):
-                            tool_calls.append(tc)
-                        else:
+                            # Convert to frontend expected format
                             tool_calls.append({
-                                "name": getattr(tc, "name", ""),
+                                "tool": tc.get("name", ""),
+                                "args": tc.get("args", {}),
+                                "tool_call_id": tc.get("id", ""),
+                            })
+                        else:
+                            # Handle object-style tool calls
+                            tool_calls.append({
+                                "tool": getattr(tc, "name", ""),
                                 "args": getattr(tc, "args", {}),
-                                "id": getattr(tc, "id", ""),
+                                "tool_call_id": getattr(tc, "id", ""),
                             })
 
                 # Skip empty messages
