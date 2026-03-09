@@ -14,9 +14,8 @@ from deepagents.middleware import SkillsMiddleware
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
-from app.core.config import Settings, PERSISTENT_MOUNT_PATH, DEFAULT_MCP_CONFIG
 from app.core.checkpoint import get_checkpoint_manager
-from app.core.tools import python_sandbox
+from app.core.config import Settings, PERSISTENT_MOUNT_PATH, DEFAULT_MCP_CONFIG
 from app.models.schemas import AgentConfig
 
 logger = logging.getLogger("deepagent.service")
@@ -141,12 +140,10 @@ class AgentService:
 
         tools = []
 
-        # Load tools from registry if specified
         if tool_names:
             tools.extend(get_tools_by_names(tool_names, self.settings))
             logger.info(f"Loaded {len(tools)} tools from registry: {tool_names}")
         else:
-            # Default tools if none specified
             logger.info("No tools specified, using default: python_sandbox")
             from app.core.tools import python_sandbox
             tools.append(python_sandbox)

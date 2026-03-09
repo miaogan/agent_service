@@ -57,10 +57,9 @@ async def python_sandbox(
 
     sandbox = None
     try:
-        # Mount host directory -> container persistent path
         volumes = [
             Volume(
-                name="workdir",
+                name="/workspace",
                 host=Host(path=settings.sandbox_output_host_dir),
                 mount_path=PERSISTENT_MOUNT_PATH,
                 sub_path="task-001",
@@ -117,12 +116,12 @@ async def python_sandbox(
 
 def get_sandbox_tool(settings: Settings):
     """Get the sandbox tool with settings bound.
-    
+
     Returns a wrapper that has settings pre-bound.
     """
     # Store settings in closure
     bound_settings = settings
-    
+
     @tool
     async def python_sandbox_with_settings(code: str, timeout_seconds: Optional[int] = 180) -> str:
         """
@@ -141,10 +140,10 @@ def get_sandbox_tool(settings: Settings):
             "settings": bound_settings,
             "timeout_seconds": timeout_seconds,
         })
-    
+
     # Override the name to match the expected tool name
     python_sandbox_with_settings.name = "python_sandbox"
-    
+
     return python_sandbox_with_settings
 
 
@@ -160,11 +159,11 @@ TOOL_REGISTRY = {
 def get_tools_by_names(tool_names: list[str], settings: Settings) -> list:
     """
     Get tool instances by their names from the registry.
-    
+
     Args:
         tool_names: List of tool names to load
         settings: Application settings
-        
+
     Returns:
         List of tool instances
     """

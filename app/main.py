@@ -7,6 +7,12 @@ Main module that initializes and runs the DeepAgent service.
 import asyncio
 import logging
 import sys
+
+# ─── Windows Event Loop Fix ───────────────────────────────────────────────────
+# CRITICAL: MUST be set BEFORE importing uvicorn or any async libraries
+if sys.platform == "win32":
+   asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -15,12 +21,6 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-# ─── Windows Event Loop Fix ───────────────────────────────────────────────────
-
-# On Windows, psycopg/asyncpg requires SelectorEventLoop instead of ProactorEventLoop
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.api.routes import register_routes
 from app.core.config import Settings, get_settings, ensure_directories
@@ -187,10 +187,18 @@ app = create_app()
 # ─── Development server entry point ─────────────────────────────────────────
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
+    # Ensure Windows uses SelectorEventLoop for psycopg compatibility
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    # Use uvicorn Config directly to control event loop creation
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
         port=8001,
-        reload=False,
         log_level="info",
     )
+    server = uvicorn.Server(config)
+    
+    # Run with asyncio.run to ensure correct event loop on Windows
+    asyncio.run(server.serve())

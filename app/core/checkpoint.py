@@ -5,6 +5,7 @@ Provides persistent conversation state storage using PostgreSQL.
 """
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -22,6 +23,7 @@ class CheckpointManager:
         self.settings = settings
         self._saver: Optional[AsyncPostgresSaver] = None
         self._pool = None
+        self._cm = None  # Context manager for direct connection (Windows)
 
     @property
     def saver(self) -> Optional[AsyncPostgresSaver]:
@@ -35,15 +37,12 @@ class CheckpointManager:
             logger.info("No PostgreSQL configuration found, using in-memory checkpointer")
             # Use memory saver as fallback
             from langgraph.checkpoint.memory import MemorySaver
-            self._saver = MemorySaver()
+            self._saver = MemorySaver()  # type: ignore
             logger.info("In-memory checkpointer initialized")
             return
 
         try:
-            from psycopg_pool import AsyncConnectionPool
-
             # Use synchronous connection string format for psycopg3
-            # psycopg_pool uses psycopg3, NOT asyncpg
             db_url = self.settings.effective_database_url
 
             # Mask password in log
@@ -54,29 +53,43 @@ class CheckpointManager:
 
             logger.info(f"Connecting to PostgreSQL: {log_url}")
 
-            # Create connection pool with autocommit=True
-            # Required for CREATE INDEX CONCURRENTLY in LangGraph migrations
-            self._pool = AsyncConnectionPool(
-                conninfo=db_url,
-                max_size=10,
-                open=False,
-                kwargs={
-                    "autocommit": True,  # Required for CREATE INDEX CONCURRENTLY
-                    "prepare_threshold": 0,  # Disable prepared statements for better compatibility
-                },
-            )
+            # Windows compatibility: psycopg_pool uses ProactorEventLoop in background threads
+            # which is incompatible with async psycopg. Use direct connection instead.
+            if sys.platform == "win32":
+                logger.info("Windows detected: using direct connection (no pool) for compatibility")
+                # Create checkpointer directly from connection string
+                # from_conn_string returns a context manager that handles connection lifecycle
+                self._cm = AsyncPostgresSaver.from_conn_string(db_url)
+                self._saver = await self._cm.__aenter__()
+                await self._saver.setup()
+                logger.info("PostgreSQL checkpointer initialized (direct connection mode)")
+            else:
+                # On Unix systems, use connection pool for better performance
+                from psycopg_pool import AsyncConnectionPool
 
-            # Open the pool
-            await self._pool.open()
+                # Create connection pool with autocommit=True
+                # Required for CREATE INDEX CONCURRENTLY in LangGraph migrations
+                self._pool = AsyncConnectionPool(
+                    conninfo=db_url,
+                    max_size=10,
+                    open=False,
+                    kwargs={
+                        "autocommit": True,  # Required for CREATE INDEX CONCURRENTLY
+                        "prepare_threshold": 0,  # Disable prepared statements for better compatibility
+                    },
+                )
 
-            # Create checkpointer with pool
-            self._saver = AsyncPostgresSaver(self._pool)
+                # Open the pool
+                await self._pool.open()
 
-            # Setup tables (creates checkpoint_writes, checkpoint_blobs, checkpoints, etc.)
-            # Migrations 6, 7, 8 use CREATE INDEX CONCURRENTLY which requires autocommit
-            await self._saver.setup()
+                # Create checkpointer with pool
+                self._saver = AsyncPostgresSaver(self._pool)  # type: ignore
 
-            logger.info("PostgreSQL checkpointer initialized successfully")
+                # Setup tables (creates checkpoint_writes, checkpoint_blobs, checkpoints, etc.)
+                # Migrations 6, 7, 8 use CREATE INDEX CONCURRENTLY which requires autocommit
+                await self._saver.setup()
+
+                logger.info("PostgreSQL checkpointer initialized successfully (pool mode)")
 
         except ImportError as e:
             logger.error(f"Missing dependency for PostgreSQL: {e}. Install with: pip install psycopg[binary] psycopg_pool")
@@ -89,6 +102,18 @@ class CheckpointManager:
 
     async def close(self) -> None:
         """Close the PostgreSQL connection pool."""
+        # Close context manager (Windows direct connection)
+        if self._cm:
+            try:
+                await self._cm.__aexit__(None, None, None)
+                logger.info("PostgreSQL connection closed")
+            except Exception as e:
+                logger.error(f"Error closing PostgreSQL connection: {e}")
+            finally:
+                self._cm = None
+                self._saver = None
+        
+        # Close pool (Unix systems)
         if self._pool:
             try:
                 await self._pool.close()
