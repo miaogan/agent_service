@@ -14,6 +14,7 @@ from typing import Optional
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # ─── Windows Event Loop Fix ───────────────────────────────────────────────────
 
@@ -155,6 +156,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         version="0.5.0",
         description="AI agent orchestration service with MCP, Skills, and Agent Pool support",
         lifespan=lifespan,
+    )
+
+    # Add CORS middleware for frontend access
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # 允许所有来源，生产环境应限制
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Register routes
