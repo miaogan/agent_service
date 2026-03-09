@@ -163,6 +163,31 @@ class InterruptInfo(BaseModel):
     allowed_decisions: List[str] = Field(default_factory=lambda: ["approve", "reject"])
 
 
+class HistoryRequest(BaseModel):
+    """Request model for fetching conversation history."""
+
+    thread_id: str = Field(..., description="Conversation thread ID")
+    limit: int = Field(default=100, ge=1, le=1000, description="Maximum number of checkpoints to retrieve")
+
+
+class MessageItem(BaseModel):
+    """Single message item in conversation history."""
+
+    role: str = Field(..., description="Message role: user, assistant, tool, system")
+    content: str = Field(..., description="Message content")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(default=None, description="Tool calls if any")
+    tool_call_id: Optional[str] = Field(default=None, description="Tool call ID for tool messages")
+
+
+class HistoryResponse(BaseModel):
+    """Response model for conversation history."""
+
+    thread_id: str = Field(..., description="Conversation thread ID")
+    messages: List[MessageItem] = Field(default_factory=list, description="List of messages")
+    total_checkpoints: int = Field(default=0, description="Total number of checkpoints found")
+    has_more: bool = Field(default=False, description="Whether there are more checkpoints")
+
+
 class ChatResponse(BaseModel):
     """Chat response model for non-streaming responses."""
 

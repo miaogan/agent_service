@@ -23,6 +23,9 @@ from app.models.schemas import (
     ChatRequest,
     ResumeRequest,
     InterruptInfo,
+    HistoryRequest,
+    HistoryResponse,
+    MessageItem,
 )
 from app.services.agent_pool import AgentPool
 from app.services.agent_service import AgentService
@@ -35,6 +38,134 @@ DEFAULT_AGENT_ID = "default"
 
 
 # ─── Chat Endpoints ─────────────────────────────────────────────────────────
+
+
+async def get_history(
+    request: HistoryRequest,
+    agent_service: AgentService,
+):
+    """Get conversation history for a thread from PostgreSQL checkpointer."""
+    from app.core.checkpoint import get_checkpoint_manager
+
+    checkpoint_manager = get_checkpoint_manager()
+    messages = []
+    total_checkpoints = 0
+
+    if not checkpoint_manager.saver:
+        logger.warning("No checkpointer available, returning empty history")
+        return HistoryResponse(
+            thread_id=request.thread_id,
+            messages=[],
+            total_checkpoints=0,
+            has_more=False,
+        )
+
+    try:
+        config = {"configurable": {"thread_id": request.thread_id}}
+
+        # Get all checkpoints for this thread
+        checkpoints = []
+        async for cp_tuple in checkpoint_manager.saver.alist(config, limit=request.limit + 1):
+            checkpoints.append(cp_tuple)
+            total_checkpoints += 1
+
+        has_more = len(checkpoints) > request.limit
+        if has_more:
+            checkpoints = checkpoints[:request.limit]
+
+        # Extract messages from checkpoints
+        # Checkpoints are returned in reverse chronological order (newest first)
+        # We need to process them in chronological order (oldest first)
+        seen_message_ids = set()
+
+        for cp_tuple in reversed(checkpoints):
+            checkpoint = cp_tuple.checkpoint
+            channel_values = checkpoint.get("channel_values", {})
+
+            # Get messages from channel_values
+            checkpoint_messages = channel_values.get("messages", [])
+
+            for msg in checkpoint_messages:
+                # Get message ID to avoid duplicates
+                msg_id = getattr(msg, "id", None) or id(msg)
+
+                if msg_id in seen_message_ids:
+                    continue
+                seen_message_ids.add(msg_id)
+
+                # Extract role and content
+                msg_type = type(msg).__name__
+                role = "assistant"
+                content = ""
+                tool_calls = None
+                tool_call_id = None
+
+                # Determine role based on message type
+                if "Human" in msg_type or "User" in msg_type:
+                    role = "user"
+                elif "Tool" in msg_type:
+                    role = "tool"
+                    tool_call_id = getattr(msg, "tool_call_id", None)
+                elif "System" in msg_type:
+                    role = "system"
+
+                # Extract content
+                if hasattr(msg, "content"):
+                    c = msg.content
+                    if isinstance(c, str):
+                        content = c
+                    elif isinstance(c, list):
+                        content = "".join(
+                            p.get("text", "") if isinstance(p, dict) else str(p)
+                            for p in c
+                        )
+                    else:
+                        content = str(c) if c else ""
+                else:
+                    content = str(msg)
+
+                # Extract tool calls if present
+                tcalls = getattr(msg, "tool_calls", None)
+                if tcalls:
+                    tool_calls = []
+                    for tc in tcalls:
+                        if isinstance(tc, dict):
+                            tool_calls.append(tc)
+                        else:
+                            tool_calls.append({
+                                "name": getattr(tc, "name", ""),
+                                "args": getattr(tc, "args", {}),
+                                "id": getattr(tc, "id", ""),
+                            })
+
+                # Skip empty messages
+                if not content and not tool_calls:
+                    continue
+
+                messages.append(MessageItem(
+                    role=role,
+                    content=content,
+                    tool_calls=tool_calls,
+                    tool_call_id=tool_call_id,
+                ))
+
+        logger.info(f"Retrieved {len(messages)} messages from {total_checkpoints} checkpoints for thread {request.thread_id}")
+
+        return HistoryResponse(
+            thread_id=request.thread_id,
+            messages=messages,
+            total_checkpoints=total_checkpoints,
+            has_more=has_more,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get history: {type(e).__name__}: {e}")
+        return HistoryResponse(
+            thread_id=request.thread_id,
+            messages=[],
+            total_checkpoints=0,
+            has_more=False,
+        )
 
 
 async def chat_stream(
@@ -483,6 +614,11 @@ def register_routes(
     storage: AgentConfigStorage,
 ):
     """Register all routes with the FastAPI app."""
+
+    @app.post("/chat/history", response_model=HistoryResponse)
+    async def _get_history(request: HistoryRequest):
+        """Get conversation history for a thread."""
+        return await get_history(request, agent_service)
 
     @app.post("/chat/stream")
     async def _chat_stream(request: ChatRequest):
