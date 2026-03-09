@@ -33,6 +33,10 @@ class CheckpointManager:
         # Check if PostgreSQL is configured
         if not self.settings.database_url and not self.settings.postgres_host:
             logger.info("No PostgreSQL configuration found, using in-memory checkpointer")
+            # Use memory saver as fallback
+            from langgraph.checkpoint.memory import MemorySaver
+            self._saver = MemorySaver()
+            logger.info("In-memory checkpointer initialized")
             return
 
         try:
