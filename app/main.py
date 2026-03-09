@@ -14,8 +14,6 @@ from typing import Optional
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 
 # ─── Windows Event Loop Fix ───────────────────────────────────────────────────
 
@@ -167,29 +165,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.agent_pool = agent_pool
     app.state.storage = storage
     app.state.settings = settings
-
-    # Mount static files for frontend
-    frontend_dist = settings.root_dir.parent / "agent-chat-frontend" / "dist"
-    if frontend_dist.exists():
-        # Mount assets directory
-        assets_dir = frontend_dist / "assets"
-        if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
-        # SPA fallback - serve index.html for all unmatched routes
-        @app.get("/{full_path:path}")
-        async def serve_spa(full_path: str):
-            """Serve the SPA for all unmatched routes."""
-            # Check if requesting a specific file (like vite.svg)
-            file_path = frontend_dist / full_path
-            if file_path.exists() and file_path.is_file():
-                return FileResponse(str(file_path))
-            # Otherwise serve index.html for SPA routing
-            return FileResponse(str(frontend_dist / "index.html"))
-
-        logger.info(f"Frontend static files mounted from: {frontend_dist}")
-    else:
-        logger.warning(f"Frontend dist directory not found: {frontend_dist}")
 
     return app
 
