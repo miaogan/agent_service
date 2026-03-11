@@ -2,11 +2,24 @@
 API routes module.
 
 Defines all HTTP endpoints for the agent service.
+
+Stream Event Types (compatible with DeerFlow):
+- delta: Content increment
+- tool_call: Tool invocation
+- tool_result: Tool execution result
+- task_started: Subtask started
+- task_running: Subtask running (with AI message)
+- task_completed: Subtask completed
+- task_failed: Subtask failed
+- task_timed_out: Subtask timed out
+- interrupt: Human-in-the-loop approval required
+- done: Stream completed
+- error: Error occurred
 """
 
-import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
@@ -19,10 +32,8 @@ from app.models.schemas import (
     AgentConfig,
     AgentConfigCreate,
     AgentConfigUpdate,
-    AgentInfo,
     ChatRequest,
     ResumeRequest,
-    InterruptInfo,
     HistoryRequest,
     HistoryResponse,
     MessageItem,
@@ -155,7 +166,8 @@ async def get_history(
                     tool_call_id=tool_call_id,
                 ))
 
-        logger.info(f"Retrieved {len(messages)} messages from {total_checkpoints} checkpoints for thread {request.thread_id}")
+        logger.info(
+            f"Retrieved {len(messages)} messages from {total_checkpoints} checkpoints for thread {request.thread_id}")
 
         return HistoryResponse(
             thread_id=request.thread_id,
@@ -179,9 +191,21 @@ async def chat_stream(
     agent_service: AgentService,
     agent_pool: Optional[AgentPool] = None,
 ):
-    """Streaming chat endpoint handler with agent pool support and human-in-the-loop."""
+    """Streaming chat endpoint handler with agent pool support and human-in-the-loop.
+
+    Output format is compatible with DeerFlow's stream events:
+    - delta: Content increment
+    - tool_call: Tool invocation
+    - tool_result: Tool execution result
+    - interrupt: Human-in-the-loop approval required
+    - task_started/task_running/task_completed/task_failed: Subtask events
+    - done: Stream completed
+    - error: Error occurred
+    """
     agent = None
     agent_id = request.agent_id or DEFAULT_AGENT_ID
+    # Generate thread_id if not provided
+    thread_id = request.thread_id or str(uuid.uuid4())
 
     # Try to get agent from pool
     if agent_pool:
@@ -217,84 +241,194 @@ async def chat_stream(
             raise HTTPException(500, "Cannot initialize Agent")
 
     # Thread config for checkpointing
-    config = {"configurable": {"thread_id": request.thread_id}}
+    config = {"configurable": {"thread_id": thread_id}}
 
     async def event_generator() -> AsyncGenerator[str, None]:
         content_acc = ""
         tools_used = []
+        tool_results = []
         event_count = 0
+        message_index = 0
+        current_messages = []  # Track all messages for values event
 
         try:
+            # Use multiple stream modes to get rich event types (DeerFlow compatible)
+            # Note: 'events' mode requires LangChain callback system and is handled
+            # separately through tool detection in messages mode
             async for event in agent.astream(
                 {"messages": [{"role": "user", "content": request.message}]},
                 config=config,
-                stream_mode=["messages", "updates"],  # Both modes required for HITL
+                stream_mode=["values", "messages", "updates", "custom", ],
             ):
                 event_count += 1
                 # Event format: (mode, value) with 2 elements
                 if not isinstance(event, tuple) or len(event) != 2:
-                    logger.warning(f"Unexpected event format: {type(event)}, len={len(event) if isinstance(event, tuple) else 'not tuple'}")
+                    logger.warning(
+                        f"Unexpected event format: {type(event)}, len={len(event) if isinstance(event, tuple) else 'not tuple'}")
                     continue
 
                 mode, value = event
 
-                # Handle updates mode - check for interrupts
+                # Handle values mode - full state snapshot (DeerFlow format)
+                if mode == "values":
+                    if isinstance(value, dict):
+                        # Extract messages from state
+                        messages = value.get("messages", [])
+                        current_messages = messages
+
+                        # Build values event
+                        values_event = {
+                            "messages": [
+                                {
+                                    "role": "user" if getattr(m, 'type', '') == "human" else "assistant",
+                                    "content": str(m.content) if hasattr(m, 'content') and m.content else ""
+                                }
+                                for m in messages
+                            ],
+                            "thread_id": thread_id,
+                        }
+
+                        # Include any additional state fields (title, todos, artifacts)
+                        for key in ["title", "todos", "artifacts"]:
+                            if key in value:
+                                values_event[key] = value[key]
+
+                        yield f"event: values\ndata: {json.dumps(values_event, ensure_ascii=False, default=str)}\n\n"
+                    continue
+
+                # Handle custom mode - for task/subagent events (DeerFlow compatible)
+                if mode == "custom":
+                    if isinstance(value, dict):
+                        event_type = value.get("type")
+                        # Pass through task events directly (task_started, task_running, etc.)
+                        if event_type in ("task_started", "task_running", "task_completed", "task_failed",
+                                          "task_timed_out"):
+                            logger.info(f"Task event: {event_type} - task_id: {value.get('task_id')}")
+                            # Use standard SSE format with event type
+                            yield f"event: custom\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
+                    continue
+
+                # Handle updates mode - check for interrupts and state updates
                 if mode == "updates":
-                    if isinstance(value, dict) and "__interrupt__" in value:
-                        interrupt_data = value["__interrupt__"]
-                        if interrupt_data and len(interrupt_data) > 0:
-                            # Extract interrupt info from Interrupt object
-                            interrupt_obj = interrupt_data[0]
-                            interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
+                    if isinstance(value, dict):
+                        # Check for interrupt (human-in-the-loop)
+                        if "__interrupt__" in value:
+                            interrupt_data = value["__interrupt__"]
+                            if interrupt_data and len(interrupt_data) > 0:
+                                # Extract interrupt info from Interrupt object
+                                interrupt_obj = interrupt_data[0]
+                                interrupt_value = interrupt_obj.value if hasattr(interrupt_obj,
+                                                                                 'value') else interrupt_obj
 
-                            # Build interrupt event for client
-                            interrupt_info = {
-                                "type": "interrupt",
-                                "interrupts": []
-                            }
+                                # Build interrupt event for client (DeerFlow format)
+                                interrupt_info = {
+                                    "type": "interrupt",
+                                    "thread_id": thread_id,
+                                    "interrupts": []
+                                }
 
-                            # Extract action_requests and review_configs
-                            action_requests = interrupt_value.get("action_requests", [])
-                            review_configs = interrupt_value.get("review_configs", [])
+                                # Extract action_requests and review_configs
+                                action_requests = interrupt_value.get("action_requests", [])
+                                review_configs = interrupt_value.get("review_configs", [])
 
-                            # Create lookup map
-                            config_map = {cfg["action_name"]: cfg for cfg in review_configs}
+                                # Create lookup map
+                                config_map = {cfg["action_name"]: cfg for cfg in review_configs}
 
-                            # Build interrupt list
-                            for action in action_requests:
-                                tool_name = action.get("name", "unknown")
-                                review_config = config_map.get(tool_name, {})
+                                # Build interrupt list
+                                for action in action_requests:
+                                    tool_name = action.get("name", "unknown")
+                                    review_config = config_map.get(tool_name, {})
 
-                                interrupt_info["interrupts"].append({
-                                    "tool_name": tool_name,
-                                    "tool_call_id": action.get("id", ""),
-                                    "args": action.get("args", {}),
-                                    "description": f"Tool '{tool_name}' execution requires approval",
-                                    "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
-                                })
+                                    interrupt_info["interrupts"].append({
+                                        "tool_name": tool_name,
+                                        "tool_call_id": action.get("id", ""),
+                                        "args": action.get("args", {}),
+                                        "description": f"Tool '{tool_name}' execution requires approval",
+                                        "allowed_decisions": review_config.get("allowed_decisions",
+                                                                               ["approve", "reject"])
+                                    })
 
-                            logger.info(f"Interrupt detected for tools: {[intr['tool_name'] for intr in interrupt_info['interrupts']]}")
-                            yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
+                                logger.info(
+                                    f"Interrupt detected for tools: {[intr['tool_name'] for intr in interrupt_info['interrupts']]}")
+                                # Use standard SSE format
+                                yield f"event: updates\ndata: {json.dumps({'__interrupt__': interrupt_info}, ensure_ascii=False)}\n\n"
+                                yield "event: end\ndata: {}\n\n"
+                                return
+
+                        # Handle other update events (like title updates, todo updates, etc.)
+                        # Pass through as update events
+                        for key, val in value.items():
+                            if key != "__interrupt__" and val is not None:
+                                update_event = {
+                                    "type": "update",
+                                    "thread_id": thread_id,
+                                    "key": key,
+                                    "value": val,
+                                }
+                                # Use standard SSE format
+                                yield f"event: updates\ndata: {json.dumps(update_event, ensure_ascii=False, default=str)}\n\n"
+                    continue
 
                 # Handle messages mode - stream content
                 elif mode == "messages":
                     # value is (message_chunk, metadata_dict)
                     if not isinstance(value, tuple) or len(value) != 2:
-                        logger.warning(f"Messages mode: unexpected value format: {type(value)}, len={len(value) if isinstance(value, tuple) else 'not tuple'}")
+                        logger.warning(
+                            f"Messages mode: unexpected value format: {type(value)}, len={len(value) if isinstance(event, tuple) else 'not tuple'}")
                         continue
 
                     msg, msg_metadata = value
+                    message_index += 1
+                    
+                    # Get message type
+                    msg_type = getattr(msg, 'type', '')
+                    
+                    # Handle ToolMessage - tool execution result (on_tool_end)
+                    if msg_type == 'tool':
+                        tool_call_id = getattr(msg, 'tool_call_id', '')
+                        tool_content = ""
+                        if hasattr(msg, 'content'):
+                            c = msg.content
+                            if isinstance(c, str):
+                                tool_content = c
+                            elif isinstance(c, list):
+                                tool_content = "".join(
+                                    p.get("text", "") if isinstance(p, dict) else str(p)
+                                    for p in c
+                                )
+                        
+                        # Emit on_tool_end event
+                        tool_end_event = {
+                            "event": "on_tool_end",
+                            "thread_id": thread_id,
+                            "name": "",  # Tool name not available in ToolMessage
+                            "run_id": tool_call_id,
+                            "outputs": {"content": tool_content[:500]},  # Truncate for display
+                            "tags": [],
+                            "metadata": {
+                                "langgraph_node": msg_metadata.get("langgraph_node", ""),
+                                "langgraph_step": msg_metadata.get("langgraph_step", 0),
+                            }
+                        }
+                        yield f"event: events\ndata: {json.dumps(tool_end_event, ensure_ascii=False, default=str)}\n\n"
+                        continue
 
-                    # Tool calls
+                    # Build message event in DeerFlow format
+                    msg_event = {
+                        "role": "assistant",
+                        "content": "",
+                        "thread_id": thread_id,
+                    }
+
+                    # Tool calls - also emit events for on_tool_start
                     tcalls = (
                         getattr(msg, "tool_calls", None)
                         or getattr(msg, "tool_call_chunks", None)
                     )
+
                     if tcalls:
                         logger.info(f"Tool calls detected: {len(tcalls)} calls")
-                    if tcalls:
+                        tool_call_events = []
                         for tc in tcalls:
                             name = (
                                 tc.get("name")
@@ -312,18 +446,45 @@ async def chat_stream(
                                 else getattr(tc, "id", None)
                             )
                             if name:
+                                tool_call_events.append({
+                                    "name": name,
+                                    "args": args,
+                                    "id": tid,
+                                    "type": "tool_call",
+                                })
                                 info = {
                                     "type": "tool_call",
+                                    "thread_id": thread_id,
                                     "tool": name,
                                     "args": args,
                                     "tool_call_id": tid,
+                                    "message_index": message_index,
                                 }
                                 if info not in tools_used:
                                     tools_used.append(info)
-                                    yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
+
+                                    # Emit on_tool_start event
+                                    tool_start_event = {
+                                        "event": "on_tool_start",
+                                        "thread_id": thread_id,
+                                        "name": name,
+                                        "run_id": tid,
+                                        "inputs": args,
+                                        "tags": [],
+                                        "metadata": {
+                                            "langgraph_node": msg_metadata.get("langgraph_node", ""),
+                                            "langgraph_step": msg_metadata.get("langgraph_step", 0),
+                                        }
+                                    }
+                                    yield f"event: events\ndata: {json.dumps(tool_start_event, ensure_ascii=False, default=str)}\n\n"
+
+                        if tool_call_events:
+                            msg_event["tool_calls"] = tool_call_events
 
                     # Content delta
                     delta = ""
+                    reasoning_content = ""
+
                     if hasattr(msg, "content"):
                         c = msg.content
                         if isinstance(c, str):
@@ -338,41 +499,45 @@ async def chat_stream(
                             if c is not None:
                                 delta = str(c)
 
-                    # Also check for reasoning_content (used by some models like qwen)
-                    if not delta and hasattr(msg, "additional_kwargs"):
-                        reasoning = msg.additional_kwargs.get("reasoning_content", "")
-                        if reasoning:
-                            delta = reasoning
-
-                    # Check for tool_call_chunks with reasoning_content
-                    if not delta and tcalls:
-                        for tc in tcalls:
-                            if isinstance(tc, dict) and "reasoning_content" in tc:
-                                delta = tc["reasoning_content"]
-                                break
+                    # Check for reasoning_content (used by some models like qwen/deepseek)
+                    if hasattr(msg, "additional_kwargs"):
+                        reasoning_content = msg.additional_kwargs.get("reasoning_content", "")
+                        if reasoning_content:
+                            msg_event["reasoning_content"] = reasoning_content
 
                     if delta:
                         content_acc += delta
-                        if delta.strip():
-                            yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                        msg_event["content"] = delta
 
+                    # Send message event in standard SSE format
+                    if delta or tcalls or reasoning_content:
+                        yield f"event: messages\ndata: {json.dumps(msg_event, ensure_ascii=False)}\n\n"
+
+
+            # Send final values event (DeerFlow format)
             result = {
-                "type": "done",
-                "content": content_acc,
+                "messages": [{"role": "assistant", "content": content_acc}],
+                "thread_id": thread_id,
                 "tools_used": tools_used,
             }
             if agent_id:
                 result["agent_id"] = agent_id
 
-            yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            yield f"event: values\ndata: {json.dumps(result, ensure_ascii=False)}\n\n"
+            yield "event: end\ndata: {}\n\n"
 
         except Exception as e:
             import traceback
             logger.error(f"Streaming error: {type(e).__name__} - {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            error_event = {
+                "type": "error",
+                "thread_id": thread_id,
+                "message": str(e),
+                "error_type": type(e).__name__,
+            }
+            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            yield "event: end\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -383,8 +548,12 @@ async def resume_stream(
     agent_service: AgentService,
     agent_pool: Optional[AgentPool] = None,
 ):
-    """Resume an interrupted agent with a decision."""
+    """Resume an interrupted agent with a decision.
+
+    Output format is compatible with DeerFlow's stream events.
+    """
     agent = None
+    thread_id = request.thread_id
 
     # Try to get agent from pool
     if agent_pool:
@@ -398,7 +567,7 @@ async def resume_stream(
         raise HTTPException(404, f"Agent not found: {agent_id}")
 
     # Thread config for checkpointing
-    config = {"configurable": {"thread_id": request.thread_id}}
+    config = {"configurable": {"thread_id": thread_id}}
 
     # Build decision based on user choice
     # According to deepagents docs, decisions format is:
@@ -429,12 +598,16 @@ async def resume_stream(
     async def event_generator() -> AsyncGenerator[str, None]:
         content_acc = ""
         tools_used = []
+        message_index = 0
+        current_messages = []
+
         try:
-            # Resume with Command
+            # Resume with Command - use multiple stream modes (DeerFlow compatible)
+            # Note: events are emitted from tool detection in messages mode
             async for event in agent.astream(
                 Command(resume=resume_value),
                 config=config,
-                stream_mode=["messages", "updates"],  # Both modes required
+                stream_mode=["values", "messages", "updates", "custom"],
             ):
                 # Event format: (mode, value)
                 if not isinstance(event, tuple) or len(event) != 2:
@@ -442,39 +615,89 @@ async def resume_stream(
 
                 mode, value = event
 
+                # Handle values mode - full state snapshot
+                if mode == "values":
+                    if isinstance(value, dict):
+                        messages = value.get("messages", [])
+                        current_messages = messages
+
+                        values_event = {
+                            "messages": [
+                                {
+                                    "role": "user" if getattr(m, 'type', '') == "human" else "assistant",
+                                    "content": str(m.content) if hasattr(m, 'content') and m.content else ""
+                                }
+                                for m in messages
+                            ],
+                            "thread_id": thread_id,
+                        }
+
+                        for key in ["title", "todos", "artifacts"]:
+                            if key in value:
+                                values_event[key] = value[key]
+
+                        yield f"event: values\ndata: {json.dumps(values_event, ensure_ascii=False, default=str)}\n\n"
+                    continue
+
+                # Handle custom mode - for task/subagent events
+                if mode == "custom":
+                    if isinstance(value, dict):
+                        event_type = value.get("type")
+                        if event_type in ("task_started", "task_running", "task_completed", "task_failed",
+                                          "task_timed_out"):
+                            yield f"event: custom\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
+                    continue
+
                 # Handle updates mode - check for interrupts
                 if mode == "updates":
-                    if isinstance(value, dict) and "__interrupt__" in value:
-                        interrupt_data = value["__interrupt__"]
-                        if interrupt_data and len(interrupt_data) > 0:
-                            interrupt_obj = interrupt_data[0]
-                            interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, 'value') else interrupt_obj
+                    if isinstance(value, dict):
+                        # Check for interrupt (human-in-the-loop)
+                        if "__interrupt__" in value:
+                            interrupt_data = value["__interrupt__"]
+                            if interrupt_data and len(interrupt_data) > 0:
+                                interrupt_obj = interrupt_data[0]
+                                interrupt_value = interrupt_obj.value if hasattr(interrupt_obj,
+                                                                                 'value') else interrupt_obj
 
-                            interrupt_info = {
-                                "type": "interrupt",
-                                "interrupts": []
-                            }
+                                interrupt_info = {
+                                    "type": "interrupt",
+                                    "thread_id": thread_id,
+                                    "interrupts": []
+                                }
 
-                            action_requests = interrupt_value.get("action_requests", [])
-                            review_configs = interrupt_value.get("review_configs", [])
-                            config_map = {cfg["action_name"]: cfg for cfg in review_configs}
+                                action_requests = interrupt_value.get("action_requests", [])
+                                review_configs = interrupt_value.get("review_configs", [])
+                                config_map = {cfg["action_name"]: cfg for cfg in review_configs}
 
-                            for action in action_requests:
-                                tool_name = action.get("name", "unknown")
-                                review_config = config_map.get(tool_name, {})
+                                for action in action_requests:
+                                    tool_name = action.get("name", "unknown")
+                                    review_config = config_map.get(tool_name, {})
 
-                                interrupt_info["interrupts"].append({
-                                    "tool_name": tool_name,
-                                    "tool_call_id": action.get("id", ""),
-                                    "args": action.get("args", {}),
-                                    "description": f"Tool '{tool_name}' execution requires approval",
-                                    "allowed_decisions": review_config.get("allowed_decisions", ["approve", "reject"])
-                                })
+                                    interrupt_info["interrupts"].append({
+                                        "tool_name": tool_name,
+                                        "tool_call_id": action.get("id", ""),
+                                        "args": action.get("args", {}),
+                                        "description": f"Tool '{tool_name}' execution requires approval",
+                                        "allowed_decisions": review_config.get("allowed_decisions",
+                                                                               ["approve", "reject"])
+                                    })
 
-                            logger.info(f"Another interrupt detected during resume")
-                            yield f"data: {json.dumps(interrupt_info, ensure_ascii=False)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
+                                logger.info(f"Another interrupt detected during resume")
+                                yield f"event: updates\ndata: {json.dumps({'__interrupt__': interrupt_info}, ensure_ascii=False)}\n\n"
+                                yield "event: end\ndata: {}\n\n"
+                                return
+
+                        # Handle other update events
+                        for key, val in value.items():
+                            if key != "__interrupt__" and val is not None:
+                                update_event = {
+                                    "type": "update",
+                                    "thread_id": thread_id,
+                                    "key": key,
+                                    "value": val,
+                                }
+                                yield f"event: updates\ndata: {json.dumps(update_event, ensure_ascii=False, default=str)}\n\n"
+                    continue
 
                 # Handle messages mode - stream content
                 elif mode == "messages":
@@ -482,19 +705,88 @@ async def resume_stream(
                         continue
 
                     msg, msg_metadata = value
+                    message_index += 1
+                    
+                    # Get message type
+                    msg_type = getattr(msg, 'type', '')
+                    
+                    # Handle ToolMessage - tool execution result (on_tool_end)
+                    if msg_type == 'tool':
+                        tool_call_id = getattr(msg, 'tool_call_id', '')
+                        tool_content = ""
+                        if hasattr(msg, 'content'):
+                            c = msg.content
+                            if isinstance(c, str):
+                                tool_content = c
+                            elif isinstance(c, list):
+                                tool_content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in c)
+                        
+                        # Emit on_tool_end event
+                        tool_end_event = {
+                            "event": "on_tool_end",
+                            "thread_id": thread_id,
+                            "name": "",
+                            "run_id": tool_call_id,
+                            "outputs": {"content": tool_content[:500]},
+                            "tags": [],
+                            "metadata": {
+                                "langgraph_node": msg_metadata.get("langgraph_node", "") if msg_metadata else "",
+                                "langgraph_step": msg_metadata.get("langgraph_step", 0) if msg_metadata else 0,
+                            }
+                        }
+                        yield f"event: events\ndata: {json.dumps(tool_end_event, ensure_ascii=False, default=str)}\n\n"
+                        continue
 
-                    # Tool calls
+                    # Build message event in DeerFlow format
+                    msg_event = {
+                        "role": "assistant",
+                        "content": "",
+                        "thread_id": thread_id,
+                    }
+
+                    # Tool calls - also emit events for on_tool_start
                     tcalls = getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None)
                     if tcalls:
+                        tool_call_events = []
                         for tc in tcalls:
                             name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
                             args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
                             tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                             if name:
-                                info = {"type": "tool_call", "tool": name, "args": args, "tool_call_id": tid}
+                                tool_call_events.append({
+                                    "name": name,
+                                    "args": args,
+                                    "id": tid,
+                                    "type": "tool_call",
+                                })
+                                info = {
+                                    "type": "tool_call",
+                                    "thread_id": thread_id,
+                                    "tool": name,
+                                    "args": args,
+                                    "tool_call_id": tid,
+                                    "message_index": message_index,
+                                }
                                 if info not in tools_used:
                                     tools_used.append(info)
-                                    yield f"data: {json.dumps(info, ensure_ascii=False)}\n\n"
+
+                                    # Emit on_tool_start event
+                                    tool_start_event = {
+                                        "event": "on_tool_start",
+                                        "thread_id": thread_id,
+                                        "name": name,
+                                        "run_id": tid,
+                                        "inputs": args,
+                                        "tags": [],
+                                        "metadata": {
+                                            "langgraph_node": msg_metadata.get("langgraph_node", "") if msg_metadata else "",
+                                            "langgraph_step": msg_metadata.get("langgraph_step", 0) if msg_metadata else 0,
+                                        }
+                                    }
+                                    yield f"event: events\ndata: {json.dumps(tool_start_event, ensure_ascii=False, default=str)}\n\n"
+
+                        if tool_call_events:
+                            msg_event["tool_calls"] = tool_call_events
 
                     # Content delta
                     delta = ""
@@ -505,25 +797,46 @@ async def resume_stream(
                         elif isinstance(c, list):
                             delta = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in c)
 
+                    # Check for reasoning_content
+                    reasoning_content = ""
+                    if hasattr(msg, "additional_kwargs"):
+                        reasoning_content = msg.additional_kwargs.get("reasoning_content", "")
+                        if reasoning_content:
+                            msg_event["reasoning_content"] = reasoning_content
+
                     if delta:
                         content_acc += delta
-                        if delta.strip():
-                            yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                        msg_event["content"] = delta
 
-            result = {"type": "done", "content": content_acc, "tools_used": tools_used, "agent_id": agent_id}
-            yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+                    # Send message event in standard SSE format
+                    if delta or tcalls or reasoning_content:
+                        yield f"event: messages\ndata: {json.dumps(msg_event, ensure_ascii=False)}\n\n"
+
+
+            result = {
+                "messages": [{"role": "assistant", "content": content_acc}],
+                "thread_id": thread_id,
+                "tools_used": tools_used,
+                "agent_id": agent_id,
+            }
+            yield f"event: values\ndata: {json.dumps(result, ensure_ascii=False)}\n\n"
+            yield "event: end\ndata: {}\n\n"
 
         except Exception as e:
             logger.error(f"Resume streaming error: {type(e).__name__} - {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            error_event = {
+                "type": "error",
+                "thread_id": thread_id,
+                "message": str(e),
+                "error_type": type(e).__name__,
+            }
+            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            yield "event: end\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ─── Agent Configuration Endpoints ──────────────────────────────────────────
-
 
 def create_agent_config(
     config_create: AgentConfigCreate, storage: AgentConfigStorage, agent_pool: AgentPool

@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Service Stream Test</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #00d9ff;
+        }
+        .config-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            margin-bottom: 5px;
+            color: #00d9ff;
+            font-size: 14px;
+        }
+        input, select, textarea {
+            padding: 10px;
+            border: 1px solid #0f3460;
+            border-radius: 5px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 14px;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #00d9ff;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+        .btn-primary:hover {
+            background: #00b8d9;
+        }
+        .btn-primary:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: #0f3460;
+            color: #eee;
+        }
+        .btn-secondary:hover {
+            background: #1a4a7a;
+        }
+        .btn-danger {
+            background: #e94560;
+            color: #fff;
+        }
+        .btn-danger:hover {
+            background: #c73e54;
+        }
+        .output-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .output-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        .panel {
+            background: #16213e;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .panel-header {
+            background: #0f3460;
+            padding: 10px 15px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .panel-content {
+            padding: 15px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .event-item {
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            border-radius: 5px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .event-messages { background: #1a4a2e; border-left: 3px solid #00ff88; }
+        .event-values { background: #2a3a4a; border-left: 3px solid #4488ff; }
+        .event-updates { background: #3a2a4a; border-left: 3px solid #aa66ff; }
+        .event-custom { background: #1a3a4a; border-left: 3px solid #00aaff; }
+        .event-events { background: #4a3a1a; border-left: 3px solid #ffaa00; }
+        .event-debug { background: #2a2a3a; border-left: 3px solid #8888aa; }
+        .event-end { background: #2a4a2a; border-left: 3px solid #88ff00; }
+        .event-error { background: #4a1a2a; border-left: 3px solid #ff4488; }
+        .event-delta { background: #1a4a2e; border-left: 3px solid #00ff88; }
+        .event-tool_call { background: #4a3a1a; border-left: 3px solid #ffaa00; }
+        .event-reasoning { background: #3a2a4a; border-left: 3px solid #aa66ff; }
+        .event-task_started { background: #1a3a4a; border-left: 3px solid #00aaff; }
+        .event-task_running { background: #1a4a3a; border-left: 3px solid #00ffaa; }
+        .event-task_completed { background: #2a4a1a; border-left: 3px solid #88ff00; }
+        .event-task_failed { background: #4a1a1a; border-left: 3px solid #ff4444; }
+        .event-interrupt { background: #4a2a1a; border-left: 3px solid #ff8844; }
+
+        .event-type {
+            font-weight: bold;
+            color: #00d9ff;
+            margin-bottom: 4px;
+        }
+        .message-display {
+            background: #1a1a2e;
+            border-radius: 5px;
+            padding: 15px;
+            min-height: 200px;
+            line-height: 1.6;
+        }
+        .message-display .user {
+            color: #00d9ff;
+            margin-bottom: 10px;
+        }
+        .message-display .assistant {
+            color: #00ff88;
+            margin-bottom: 10px;
+        }
+        .message-display .reasoning {
+            color: #aa66ff;
+            font-style: italic;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #2a2a4e;
+            border-radius: 5px;
+        }
+        .message-display .tool-info {
+            color: #ffaa00;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            padding: 10px 15px;
+            background: #0f3460;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #555;
+        }
+        .status-dot.connected { background: #00ff88; }
+        .status-dot.streaming { background: #00d9ff; animation: pulse 1s infinite; }
+        .status-dot.error { background: #ff4444; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .interrupt-panel {
+            display: none;
+            background: #4a2a1a;
+            border: 2px solid #ff8844;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .interrupt-panel.show { display: block; }
+        .interrupt-item {
+            background: #3a2a1a;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .interrupt-item h4 {
+            color: #ff8844;
+            margin-bottom: 10px;
+        }
+        .interrupt-item pre {
+            background: #2a1a0a;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin-bottom: 10px;
+        }
+        .interrupt-actions {
+            display: flex;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Agent Service Stream Test</h1>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-item">
+                <span>状态:</span>
+                <span id="statusDot" class="status-dot"></span>
+                <span id="statusText">未连接</span>
+            </div>
+            <div class="status-item">
+                <span>事件数:</span>
+                <span id="eventCount">0</span>
+            </div>
+            <div class="status-item">
+                <span>线程ID:</span>
+                <span id="currentThreadId">-</span>
+            </div>
+        </div>
+
+        <!-- Config Panel -->
+        <div class="config-panel">
+            <div class="form-group">
+                <label>API Base URL</label>
+                <input type="text" id="apiBaseUrl" value="http://127.0.0.1:8001" />
+            </div>
+            <div class="form-group">
+                <label>模型</label>
+                <input type="text" id="model" value="deepseek-chat" />
+            </div>
+            <div class="form-group">
+                <label>Agent ID (可选)</label>
+                <input type="text" id="agentId" placeholder="留空使用默认" />
+            </div>
+            <div class="form-group">
+                <label>Thread ID (可选)</label>
+                <input type="text" id="threadId" placeholder="留空自动生成" />
+            </div>
+        </div>
+
+        <!-- Message Input -->
+        <div class="config-panel">
+            <div class="form-group" style="grid-column: 1 / -1;">
+                <label>消息内容</label>
+                <textarea id="messageInput" placeholder="输入你的消息..."></textarea>
+            </div>
+        </div>
+
+        <!-- Buttons -->
+        <div class="btn-group">
+            <button class="btn-primary" id="sendBtn" onclick="sendMessage()">发送消息</button>
+            <button class="btn-secondary" onclick="generateThreadId()">生成新 Thread ID</button>
+            <button class="btn-secondary" onclick="getHistory()">获取历史</button>
+            <button class="btn-danger" onclick="clearOutput()">清空输出</button>
+        </div>
+
+        <!-- Interrupt Panel -->
+        <div class="interrupt-panel" id="interruptPanel">
+            <h3 style="color: #ff8844; margin-bottom: 15px;">⚠️ 需要审批</h3>
+            <div id="interruptList"></div>
+        </div>
+
+        <!-- Output Container -->
+        <div class="output-container">
+            <!-- Events Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>📋 事件流</span>
+                    <button class="btn-secondary" style="padding: 5px 10px; font-size: 12px;" onclick="clearEvents()">清空</button>
+                </div>
+                <div class="panel-content" id="eventsOutput"></div>
+            </div>
+
+            <!-- Message Display -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>💬 消息预览</span>
+                </div>
+                <div class="panel-content">
+                    <div class="message-display" id="messageDisplay"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let currentThreadId = null;
+        let eventCount = 0;
+        let isStreaming = false;
+        let currentAgentId = null;
+        let accumulatedContent = '';
+
+        // Generate UUID
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        // Generate new thread ID
+        function generateThreadId() {
+            currentThreadId = generateUUID();
+            document.getElementById('threadId').value = currentThreadId;
+            document.getElementById('currentThreadId').textContent = currentThreadId;
+        }
+
+        // Update status
+        function updateStatus(status, text) {
+            const dot = document.getElementById('statusDot');
+            const textEl = document.getElementById('statusText');
+            dot.className = 'status-dot ' + status;
+            textEl.textContent = text;
+        }
+
+        // Add event to display
+        function addEvent(eventType, eventData) {
+            eventCount++;
+            document.getElementById('eventCount').textContent = eventCount;
+
+            const container = document.getElementById('eventsOutput');
+            const eventDiv = document.createElement('div');
+
+            const type = eventType || eventData.type || 'unknown';
+            eventDiv.className = `event-item event-${type}`;
+
+            let displayContent = '';
+            if (type === 'messages') {
+                // LangGraph messages format
+                displayContent = `📝 MESSAGES\n线程ID: ${eventData.thread_id || '-'}\n角色: ${eventData.role || 'assistant'}\n内容: ${eventData.content || ''}`;
+                if (eventData.tool_calls) {
+                    displayContent += `\n工具调用: ${eventData.tool_calls.map(t => t.name).join(', ')}`;
+                }
+                if (eventData.reasoning_content) {
+                    displayContent += `\n思考: ${eventData.reasoning_content.substring(0, 100)}...`;
+                }
+                // Update message display
+                if (eventData.content) {
+                    updateMessageDisplay('delta', eventData.content);
+                }
+                if (eventData.reasoning_content) {
+                    updateMessageDisplay('reasoning', eventData.reasoning_content);
+                }
+            } else if (type === 'values') {
+                // Full state snapshot
+                const msgCount = eventData.messages ? eventData.messages.length : 0;
+                displayContent = `📊 VALUES\n线程ID: ${eventData.thread_id || '-'}\n消息数: ${msgCount}`;
+                if (eventData.title) {
+                    displayContent += `\n标题: ${eventData.title}`;
+                }
+                if (eventData.todos) {
+                    displayContent += `\n待办: ${eventData.todos.length} 项`;
+                }
+                displayContent += `\n\n${JSON.stringify(eventData, null, 2).substring(0, 300)}...`;
+            } else if (type === 'updates') {
+                displayContent = `🔄 UPDATES\n线程ID: ${eventData.thread_id || '-'}\n${JSON.stringify(eventData, null, 2)}`;
+                if (eventData.__interrupt__) {
+                    showInterruptPanel(eventData.__interrupt__);
+                }
+            } else if (type === 'custom') {
+                const customType = eventData.type || 'unknown';
+                displayContent = `⚡ CUSTOM (${customType})\n任务ID: ${eventData.task_id || '-'}\n${JSON.stringify(eventData, null, 2)}`;
+            } else if (type === 'events') {
+                // LangChain events (on_tool_start, on_tool_end, on_chain_start, etc.)
+                const eventType = eventData.event || 'unknown';
+                let eventIcon = '🔗';
+                let eventDesc = eventType;
+                
+                // Specific formatting for different event types
+                if (eventType === 'on_tool_start') {
+                    eventIcon = '🔧';
+                    eventDesc = `TOOL START: ${eventData.name || 'unknown'}`;
+                } else if (eventType === 'on_tool_end') {
+                    eventIcon = '✅';
+                    eventDesc = `TOOL END: ${eventData.run_id || 'unknown'}`;
+                } else if (eventType === 'on_chain_start') {
+                    eventIcon = '🚀';
+                    eventDesc = `CHAIN START: ${eventData.name || 'unknown'}`;
+                } else if (eventType === 'on_chain_end') {
+                    eventIcon = '🏁';
+                    eventDesc = `CHAIN END: ${eventData.name || 'unknown'}`;
+                } else if (eventType === 'on_llm_start') {
+                    eventIcon = '🤖';
+                    eventDesc = `LLM START: ${eventData.name || 'unknown'}`;
+                } else if (eventType === 'on_llm_end') {
+                    eventIcon = '💬';
+                    eventDesc = `LLM END: ${eventData.name || 'unknown'}`;
+                }
+                
+                displayContent = `${eventIcon} EVENTS (${eventDesc})\n线程ID: ${eventData.thread_id || '-'}`;
+                if (eventData.inputs) {
+                    displayContent += `\n输入: ${JSON.stringify(eventData.inputs).substring(0, 150)}...`;
+                }
+                if (eventData.outputs) {
+                    displayContent += `\n输出: ${JSON.stringify(eventData.outputs).substring(0, 150)}...`;
+                }
+                if (eventData.run_id) {
+                    displayContent += `\nRun ID: ${eventData.run_id}`;
+                }
+            } else if (type === 'debug') {
+                // Debug information (step, node, triggers, path)
+                displayContent = `🔍 DEBUG\n步骤: ${eventData.step || '-'}\n节点: ${eventData.node || '-'}`;
+                if (eventData.triggers && eventData.triggers.length > 0) {
+                    displayContent += `\n触发器: ${eventData.triggers.join(', ')}`;
+                }
+                if (eventData.path && eventData.path.length > 0) {
+                    displayContent += `\n路径: ${eventData.path.join(' → ')}`;
+                }
+                if (eventData.message_count !== undefined) {
+                    displayContent += `\n消息数: ${eventData.message_count}`;
+                }
+            } else if (type === 'end') {
+                displayContent = `✅ END\nStream completed`;
+            } else if (type === 'error') {
+                displayContent = `❌ ERROR\n线程ID: ${eventData.thread_id || '-'}\n${eventData.message}\n类型: ${eventData.error_type || 'Unknown'}`;
+            } else {
+                displayContent = `📦 ${type.toUpperCase()}\n${JSON.stringify(eventData, null, 2)}`;
+            }
+
+            eventDiv.innerHTML = `<div class="event-type">[${new Date().toLocaleTimeString()}] ${type}</div>${displayContent}`;
+            container.appendChild(eventDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Update message display
+        function updateMessageDisplay(type, content) {
+            const display = document.getElementById('messageDisplay');
+
+            if (type === 'user') {
+                display.innerHTML += `<div class="user">👤 用户: ${content}</div>`;
+            } else if (type === 'delta') {
+                accumulatedContent += content;
+                // Update or create assistant message
+                let assistantDiv = display.querySelector('.assistant:last-child');
+                if (!assistantDiv) {
+                    assistantDiv = document.createElement('div');
+                    assistantDiv.className = 'assistant';
+                    display.appendChild(assistantDiv);
+                }
+                assistantDiv.innerHTML = `🤖 助手: ${accumulatedContent}`;
+            } else if (type === 'reasoning') {
+                display.innerHTML += `<div class="reasoning">💭 思考过程: ${content}</div>`;
+            } else if (type === 'tool') {
+                display.innerHTML += `<div class="tool-info">${content}</div>`;
+            }
+
+            display.scrollTop = display.scrollHeight;
+        }
+
+        // Show interrupt panel
+        function showInterruptPanel(interruptInfo) {
+            const panel = document.getElementById('interruptPanel');
+            const list = document.getElementById('interruptList');
+            list.innerHTML = '';
+
+            const threadId = interruptInfo.thread_id || currentThreadId;
+            const interrupts = interruptInfo.interrupts || [];
+
+            interrupts.forEach((interrupt, index) => {
+                const item = document.createElement('div');
+                item.className = 'interrupt-item';
+                item.innerHTML = `
+                    <h4>工具: ${interrupt.tool_name}</h4>
+                    <p>${interrupt.description}</p>
+                    <pre>${JSON.stringify(interrupt.args, null, 2)}</pre>
+                    <div class="interrupt-actions">
+                        <button class="btn-primary" onclick="resumeAgent('${currentAgentId}', '${threadId}', 'approve', '${interrupt.tool_call_id}', '${interrupt.tool_name}')">✅ 批准</button>
+                        <button class="btn-danger" onclick="resumeAgent('${currentAgentId}', '${threadId}', 'reject', '${interrupt.tool_call_id}', '${interrupt.tool_name}')">❌ 拒绝</button>
+                    </div>
+                `;
+                list.appendChild(item);
+            });
+
+            panel.classList.add('show');
+        }
+
+        // Send message
+        async function sendMessage() {
+            if (isStreaming) {
+                alert('正在流式传输中，请等待完成');
+                return;
+            }
+
+            const baseUrl = document.getElementById('apiBaseUrl').value;
+            const model = document.getElementById('model').value;
+            const agentId = document.getElementById('agentId').value || null;
+            let threadId = document.getElementById('threadId').value || null;
+            const message = document.getElementById('messageInput').value.trim();
+
+            if (!message) {
+                alert('请输入消息内容');
+                return;
+            }
+
+            // Generate thread ID if not provided
+            if (!threadId) {
+                generateThreadId();
+                threadId = currentThreadId;
+            }
+
+            currentThreadId = threadId;
+            currentAgentId = agentId;
+            document.getElementById('currentThreadId').textContent = threadId;
+            accumulatedContent = '';
+
+            // Update UI
+            isStreaming = true;
+            document.getElementById('sendBtn').disabled = true;
+            document.getElementById('interruptPanel').classList.remove('show');
+            updateStatus('streaming', '流式传输中...');
+
+            // Add user message to display
+            updateMessageDisplay('user', message);
+
+            try {
+                const response = await fetch(`${baseUrl}/chat/stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        thread_id: threadId,
+                        model: model,
+                        agent_id: agentId,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let currentEventType = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('event: ')) {
+                            currentEventType = line.slice(7).trim();
+                        } else if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '{}' || data === '[DONE]') {
+                                if (currentEventType === 'end') {
+                                    addEvent('end', {});
+                                }
+                                continue;
+                            }
+                            try {
+                                const eventData = JSON.parse(data);
+                                addEvent(currentEventType, eventData);
+                                currentEventType = ''; // Reset after processing
+                            } catch (e) {
+                                console.error('Failed to parse event:', data);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('Stream error:', error);
+                addEvent({
+                    type: 'error',
+                    message: error.message,
+                    error_type: error.name,
+                });
+                updateStatus('error', '错误');
+            } finally {
+                isStreaming = false;
+                document.getElementById('sendBtn').disabled = false;
+            }
+        }
+
+        // Resume agent (for interrupts)
+        async function resumeAgent(agentId, threadId, decision, toolCallId, toolName) {
+            const baseUrl = document.getElementById('apiBaseUrl').value;
+
+            document.getElementById('interruptPanel').classList.remove('show');
+            updateStatus('streaming', '恢复中...');
+            accumulatedContent = '';
+
+            try {
+                const response = await fetch(`${baseUrl}/chat/resume`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        agent_id: agentId,
+                        thread_id: threadId,
+                        decision: decision,
+                        tool_call_id: toolCallId,
+                        tool_name: toolName,
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let currentEventType = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('event: ')) {
+                            currentEventType = line.slice(7).trim();
+                        } else if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '{}' || data === '[DONE]') {
+                                if (currentEventType === 'end') {
+                                    addEvent('end', {});
+                                }
+                                continue;
+                            }
+                            try {
+                                const eventData = JSON.parse(data);
+                                addEvent(currentEventType, eventData);
+                                currentEventType = '';
+                            } catch (e) {
+                                console.error('Failed to parse event:', data);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('Resume error:', error);
+                addEvent({
+                    type: 'error',
+                    message: error.message,
+                    error_type: error.name,
+                });
+                updateStatus('error', '错误');
+            }
+        }
+
+        // Get history
+        async function getHistory() {
+            const baseUrl = document.getElementById('apiBaseUrl').value;
+            const threadId = document.getElementById('threadId').value;
+
+            if (!threadId) {
+                alert('请输入 Thread ID');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${baseUrl}/chat/history`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        thread_id: threadId,
+                        limit: 50,
+                    }),
+                });
+
+                const data = await response.json();
+                addEvent({
+                    type: 'history',
+                    ...data,
+                });
+
+                console.log('History:', data);
+                alert(`获取到 ${data.messages?.length || 0} 条消息`);
+            } catch (error) {
+                console.error('History error:', error);
+                alert('获取历史失败: ' + error.message);
+            }
+        }
+
+        // Clear output
+        function clearOutput() {
+            document.getElementById('eventsOutput').innerHTML = '';
+            document.getElementById('messageDisplay').innerHTML = '';
+            eventCount = 0;
+            document.getElementById('eventCount').textContent = '0';
+            accumulatedContent = '';
+        }
+
+        // Clear events only
+        function clearEvents() {
+            document.getElementById('eventsOutput').innerHTML = '';
+            eventCount = 0;
+            document.getElementById('eventCount').textContent = '0';
+        }
+
+        // Initialize
+        generateThreadId();
+        updateStatus('', '未连接');
+    </script>
+</body>
+</html>
